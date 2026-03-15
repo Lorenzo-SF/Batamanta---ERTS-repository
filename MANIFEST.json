@@ -1,0 +1,5 @@
+{
+  "OTP-25.0": {
+    "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.0/amd64-glibc.tar.gz"
+  }
+}
