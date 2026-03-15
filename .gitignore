@@ -1,0 +1,28 @@
+# -------------------------------------------------------------------
+# Batamanta ERTS Repository - Gitignore
+# -------------------------------------------------------------------
+
+# 1. Carpetas de caché y trabajo temporal de los scripts
+/erts/
+/src_temp/
+
+# 2. Archivos binarios y de verificación (se suben a Releases, no a Git)
+*.tar.gz
+*.sha256
+
+# 3. Archivos temporales generados por jq durante la modificación del manifest
+tmp.json
+
+# 4. Logs de compilación de Erlang/Docker
+*.log
+build_runner_*.sh
+
+# 5. Archivos basura de los sistemas operativos (macOS y Windows/Linux)
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Trash-*
+Thumbs.db
+ehthumbs.db
