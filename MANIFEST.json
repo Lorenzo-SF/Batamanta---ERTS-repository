@@ -710,6 +710,7 @@
     "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.4/amd64-glibc.tar.gz",
     "amd64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.4/amd64-musl.tar.gz",
     "arm64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.4/arm64-glibc.tar.gz",
-    "arm64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.4/arm64-musl.tar.gz"
+    "arm64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.4/arm64-musl.tar.gz",
+    "darwin-arm64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.4/darwin-arm64.tar.gz"
   }
 }
