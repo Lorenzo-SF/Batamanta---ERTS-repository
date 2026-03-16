@@ -332,7 +332,8 @@
   "OTP-26.2.5.8": {
     "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-26.2.5.8/amd64-glibc.tar.gz",
     "amd64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-26.2.5.8/amd64-musl.tar.gz",
-    "arm64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-26.2.5.8/arm64-glibc.tar.gz"
+    "arm64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-26.2.5.8/arm64-glibc.tar.gz",
+    "arm64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-26.2.5.8/arm64-musl.tar.gz"
   },
   "OTP-26.2.5.9": {
     "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-26.2.5.9/amd64-glibc.tar.gz",
