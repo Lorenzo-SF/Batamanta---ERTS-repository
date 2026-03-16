@@ -220,7 +220,8 @@
     "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.3.2.17/amd64-glibc.tar.gz",
     "amd64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.3.2.17/amd64-musl.tar.gz",
     "arm64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.3.2.17/arm64-glibc.tar.gz",
-    "arm64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.3.2.17/arm64-musl.tar.gz"
+    "arm64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.3.2.17/arm64-musl.tar.gz",
+    "darwin-arm64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.3.2.17/darwin-arm64.tar.gz"
   },
   "OTP-25.3.2.18": {
     "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-25.3.2.18/amd64-glibc.tar.gz",
