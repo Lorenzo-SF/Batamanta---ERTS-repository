@@ -392,6 +392,7 @@
     "amd64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3/amd64-musl.tar.gz"
   },
   "OTP-28.3.1": {
-    "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3.1/amd64-glibc.tar.gz"
+    "amd64-glibc": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3.1/amd64-glibc.tar.gz",
+    "amd64-musl": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3.1/amd64-musl.tar.gz"
   }
 }
