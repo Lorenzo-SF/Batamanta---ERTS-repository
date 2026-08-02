@@ -464,7 +464,11 @@ list_upstream_versions() {
 detect_new_versions() {
   # detect_new_versions [policy]
   #  Emits one X.Y.Z (without "OTP-" prefix) per missing version.
+  #  Honors $DETECT_MIN_VERSION (e.g. "27.0") — versions below that floor
+  #  are skipped, even if upstream has them. The CI passes this env var from
+  #  the workflow_dispatch `min_version` input.
   local policy="${1:-stable}"
+  local min_version="${DETECT_MIN_VERSION:-}"
   local upstream
   upstream="$(list_upstream_versions "$policy")"
   for tag in $upstream; do
@@ -472,6 +476,15 @@ detect_new_versions() {
     # "stable" policy already filters prereleases, but be defensive.
     if [[ "$v" == *rc* || "$v" == *beta* || "$v" == *alpha* ]]; then
       continue
+    fi
+    # Apply min_version floor: `sort -V` puts the smaller one first; if the
+    # smaller is the floor, the version is >= floor. Anything else is below.
+    if [[ -n "$min_version" ]]; then
+      local lower
+      lower="$(printf '%s\n%s\n' "$v" "$min_version" | sort -V | head -n1)"
+      if [[ "$lower" != "$min_version" ]]; then
+        continue
+      fi
     fi
     # Has at least one target for this version?
     local has_any=0
