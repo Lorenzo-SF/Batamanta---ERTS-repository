@@ -133,42 +133,41 @@ jobs:
           if [[ -n "${{ inputs.targets }}" ]]; then
             targets_filter="${{ inputs.targets }}"
           else
-            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64"
+            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-amd64"
           fi
-          # Map each target to its GitHub Actions runner image. linux targets
-          # use ubuntu-latest; darwin uses macos-latest; windows uses
-          # windows-latest. The matrix carries {version, target, runner} so
-          # the build job can `runs-on: ${{ matrix.runner }}` correctly.
-          matrix="$(jq -c --arg versions "$versions" --arg targets "$targets_filter" '
-            ($versions | split(" ") | map(select(. != ""))) as $vs
-            | ($targets  | split(" ") | map(select(. != ""))) as $ts
-            | {
-                include: [
-                  $vs[] as $v
-                  | $ts[] as $t
-                  | {
-                      version: $v,
-                      target: $t,
-                      runner: (
-                        if $t | startswith("linux-") then "ubuntu-latest"
-                        elif $t | startswith("darwin-") then "macos-latest"
-                        elif $t | startswith("windows-") then "windows-latest"
-                        else "ubuntu-latest"
-                        end
-                      )
-                    }
-                ]
-              }
-          ')"
-          # GitHub Actions job outputs are single-line; jq -c (compact) is
-          # required. Without -c the embedded newlines truncate the output
-          # at the first newline and the consuming job's `fromJson` chokes.
+          # Build the matrix. We assemble the (version, target, runner)
+          # triples with a bash loop and use jq only for the simple JSON
+          # wrapping at the end. The previous iteration used jq's
+          # multi-line program form which produced an empty result
+          # because of how the YAML → bash interpolation handled newlines.
+          matrix_items=""
+          for v in $versions; do
+            [[ -z "$v" ]] && continue
+            for t in $targets_filter; do
+              [[ -z "$t" ]] && continue
+              case "$t" in
+                linux-*)   runner="ubuntu-latest" ;;
+                darwin-*)  runner="macos-latest" ;;
+                windows-*) runner="windows-latest" ;;
+                *)         runner="ubuntu-latest" ;;
+              esac
+              item="$(jq -nc --arg v "$v" --arg t "$t" --arg r "$runner" \
+                '{version: $v, target: $t, runner: $r}')"
+              if [[ -z "$matrix_items" ]]; then
+                matrix_items="$item"
+              else
+                matrix_items="$matrix_items,$item"
+              fi
+            done
+          done
+          matrix="$(jq -nc --argjson items "[$matrix_items]" '{include: $items}')"
+          # GitHub Actions job outputs are single-line, so we use
+          # `jq -c` (compact) — with pretty-printed JSON the embedded
+          # newlines would truncate the output at the first newline and
+          # `fromJson` on the consumer side would choke.
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
-          # Debug: log matrix size + preview so we can confirm it's well-formed
-          echo "matrix-length=${#matrix}"
-          echo "matrix-preview=${matrix:0:200}"
 
   # -------------------------------------------------------------------------
   #  build — one job per (target, version) pair. Each runs the appropriate
