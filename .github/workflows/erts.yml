@@ -137,10 +137,30 @@ jobs:
           else
             targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64"
           fi
+          # Map each target to its GitHub Actions runner image. linux targets
+          # use ubuntu-latest; darwin uses macos-latest; windows uses
+          # windows-latest. The matrix carries {version, target, runner} so
+          # the build job can `runs-on: ${{ matrix.runner }}` correctly.
           matrix="$(jq -nc --arg versions "$versions" --arg targets "$targets_filter" '
             ($versions | split(" ") | map(select(. != ""))) as $vs
             | ($targets  | split(" ") | map(select(. != ""))) as $ts
-            | { include: [ $vs[] as $v | $ts[] as $t | { version: $v, target: $t } ] }
+            | {
+                include: [
+                  $vs[] as $v
+                  | $ts[] as $t
+                  | {
+                      version: $v,
+                      target: $t,
+                      runner: (
+                        if $t | startswith("linux-") then "ubuntu-latest"
+                        elif $t | startswith("darwin-") then "macos-latest"
+                        elif $t | startswith("windows-") then "windows-latest"
+                        else "ubuntu-latest"
+                        end
+                      )
+                    }
+                ]
+              }
           ')"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
