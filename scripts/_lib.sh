@@ -149,10 +149,10 @@ declare -a OTP_VERSIONS=(
 # -----------------------------------------------------------------------------
 #  Logging & dry-run
 # -----------------------------------------------------------------------------
-log()   { printf '%s %s\n' "$LOG_PREFIX" "$*"; }
+log()   { printf '%s %s\n' "$LOG_PREFIX" "$*" >&2; }
 warn()  { printf '%s \033[33mWARN\033[0m %s\n' "$LOG_PREFIX" "$*" >&2; }
 err()   { printf '%s \033[31mERR\033[0m  %s\n' "$LOG_PREFIX" "$*" >&2; }
-ok()    { printf '%s \033[32mOK\033[0m\n'   "$LOG_PREFIX" "$*"; }
+ok()    { printf '%s \033[32mOK\033[0m\n'   "$LOG_PREFIX" "$*" >&2; }
 
 run() {
   # run <cmd...> — execute, respecting BATAMANTA_DRY_RUN
