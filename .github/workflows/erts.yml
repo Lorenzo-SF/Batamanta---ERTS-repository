@@ -166,6 +166,9 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
+          # Debug: log matrix size + preview so we can confirm it's well-formed
+          echo "matrix-length=${#matrix}"
+          echo "matrix-preview=${matrix:0:200}"
 
   # -------------------------------------------------------------------------
   #  build — one job per (target, version) pair. Each runs the appropriate
