@@ -1,0 +1,224 @@
+name: ERTS Mirror
+
+on:
+  # ---------------------------------------------------------------------------
+  #  Triggers
+  # ---------------------------------------------------------------------------
+
+  # Weekly Monday 06:00 UTC — discover new OTP versions and build what's
+  # missing on the main branch. Resilient to single-job failures so a
+  # broken arm64 build doesn't cancel the rest.
+  schedule:
+    - cron: "0 6 * * 1"
+
+  # Manual trigger. The `version`, `targets` and `regenerate_from_zero`
+  # inputs let you (re)build a single release, a subset, or wipe the
+  # manifest and start over.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "OTP version to (re)build, e.g. 28.4.2. Leave empty to detect."
+        required: false
+        type: string
+      targets:
+        description: "Comma-separated targets. Leave empty for all 8."
+        required: false
+        type: string
+        default: "linux-glibc-amd64,linux-glibc-arm64,linux-musl-amd64,linux-musl-arm64,darwin-amd64,darwin-arm64,windows-amd64,windows-arm64"
+      regenerate_from_zero:
+        description: "Delete every existing release and MANIFEST entry, then rebuild from scratch. DANGEROUS."
+        required: false
+        type: boolean
+        default: false
+      min_version:
+        description: "Only build OTP versions >= this. Default 27.0 (we don't ship legacy ERTS for older OtP)."
+        required: false
+        type: string
+        default: "27.0"
+
+  # Run on push to main so the new commits that bump MANIFEST.json via
+  # the `manifest-commit` job trigger a fresh detect+build cycle.
+  push:
+    branches: [main]
+    paths:
+      - "MANIFEST.json"
+      - "scripts/**"
+      - ".github/workflows/erts.yml"
+
+  # Run on PRs to main — only the cheap `lint` job, no heavy builds.
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write   # to create releases + push manifest changes
+
+jobs:
+  # -------------------------------------------------------------------------
+  #  lint — quick syntax/JSON sanity check. Runs on every PR and on push.
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n on every .sh
+        run: |
+          set -e
+          for f in $(find scripts -maxdepth 2 -name '*.sh'); do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+      - name: jq on MANIFEST.json
+        run: |
+          set -e
+          test -f MANIFEST.json || { echo "no MANIFEST.json (yet)"; exit 0; }
+          jq -e 'type == "object"' MANIFEST.json >/dev/null
+
+  # -------------------------------------------------------------------------
+  #  detect — list the (version, target) pairs that are missing. Only runs
+  #  on schedule / manual / push to main, not on PRs.
+  # -------------------------------------------------------------------------
+  detect:
+    name: Detect missing versions
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gh + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh
+
+      - name: Authenticate gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | gh auth login --with-token
+
+      - name: Handle regenerate_from_zero
+        id: reset
+        if: ${{ inputs.regenerate_from_zero == true }}
+        run: |
+          echo "regenerate_from_zero=true — deleting every release and wiping MANIFEST.json"
+          for tag in $(gh release list --json tagName -q '.[].tagName'); do
+            echo "  deleting release $tag"
+            gh release delete "$tag" --yes --cleanup-tags || true
+          done
+          echo '{}' > MANIFEST.json
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add MANIFEST.json
+          git commit -m "chore(erts): wipe MANIFEST.json for regenerate_from_zero" || true
+          git push || true
+
+      - name: Detect missing versions
+        id: detect
+        env:
+          DETECT_MIN_VERSION: ${{ inputs.min_version }}
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            versions="${{ inputs.version }}"
+            echo "manual override: $versions"
+          else
+            versions="$(./scripts/detect-versions.sh stable | tr '\n' ' ')"
+            if [[ -z "$versions" ]]; then
+              echo "no new versions found"
+              echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "missing versions (min_version=${{ inputs.min_version }}): $versions"
+          fi
+          if [[ -n "${{ inputs.targets }}" ]]; then
+            targets_filter="${{ inputs.targets }}"
+          else
+            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64"
+          fi
+          matrix="$(jq -nc --arg versions "$versions" --arg targets "$targets_filter" '
+            ($versions | split(" ") | map(select(. != ""))) as $vs
+            | ($targets  | split(" ") | map(select(. != ""))) as $ts
+            | { include: [ $vs[] as $v | $ts[] as $t | { version: $v, target: $t } ] }
+          ')"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "computed matrix:"
+          echo "$matrix" | jq .
+
+  # -------------------------------------------------------------------------
+  #  build — one job per (target, version) pair. Each runs the appropriate
+  #  script in `scripts/`.
+  # -------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.target }} / OTP ${{ matrix.version }}
+    needs: detect
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc 2>/dev/null || true
+          sudo apt-get clean
+
+      - name: Install gh, jq, docker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh
+
+      - name: Authenticate gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | gh auth login --with-token
+
+      - name: Run ${{ matrix.target }} build
+        env:
+          BATAMANTA_DRY_RUN: "0"
+          BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./scripts/*.sh
+          ./scripts/erts-${{ matrix.target }}.sh ${{ matrix.version }}
+
+      - name: Upload tarball as artifact (debug aid)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-${{ matrix.version }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # -------------------------------------------------------------------------
+  #  manifest-commit — push the updated MANIFEST.json back to main once all
+  #  builds finish. Single job, no matrix.
+  # -------------------------------------------------------------------------
+  manifest-commit:
+    name: Commit MANIFEST.json
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Commit & push any manifest changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [[ -n "$(git status --porcelain MANIFEST.json)" ]]; then
+            git add MANIFEST.json
+            git commit -m "chore(erts): update MANIFEST.json [skip ci]"
+            git push
+          else
+            echo "no manifest changes"
+          fi
