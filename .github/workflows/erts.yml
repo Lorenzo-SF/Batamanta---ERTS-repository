@@ -84,6 +84,13 @@ jobs:
     name: Detect missing versions
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # The `matrix` output is consumed by the `build` job via
+    # `needs.detect.outputs.matrix`. GHA requires the output to be
+    # declared here even when the writer (the `detect` step) uses the
+    # `>> $GITHUB_OUTPUT` form — otherwise the value is invisible to
+    # downstream jobs.
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
 
@@ -190,10 +197,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        version: ["28.4"]
-        target: ["linux-glibc-amd64"]
-        runner: ["ubuntu-latest"]
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      # Maximum number of jobs to run concurrently. Without this, GitHub
+      # tries to run all (target × version) jobs at once and the runner
+      # pool is exhausted for free-tier repos. 20 is the documented max
+      # for ubuntu-latest on public repos.
+      max-parallel: 20
     steps:
       - uses: actions/checkout@v4
 
