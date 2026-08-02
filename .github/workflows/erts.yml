@@ -213,6 +213,11 @@ jobs:
       - name: Run ${{ matrix.target }} build
         env:
           BATAMANTA_DRY_RUN: "0"
+          # Both names point at the same secret. BATAMANTA_GITHUB_TOKEN is
+          # read by the bash scripts (curl + gh_auth_header); GH_TOKEN is
+          # read by the `gh` CLI itself for `gh release create`/`gh release
+          # upload`. Setting both keeps the runtime and the CLI happy.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x ./scripts/*.sh
