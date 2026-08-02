@@ -84,8 +84,6 @@ jobs:
     name: Detect missing versions
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
 
@@ -180,7 +178,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.detect.steps.detect.outputs.matrix) }}
       # Maximum number of jobs to run concurrently. Without this, GitHub
       # tries to run all (target × version) jobs at once and the runner
       # pool is exhausted for free-tier repos. 20 is the documented max
