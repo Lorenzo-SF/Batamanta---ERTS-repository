@@ -171,7 +171,11 @@ jobs:
             echo "matrix=$matrix"
             echo "matrix-length=${#matrix}"
             echo "matrix-first-200=${matrix:0:200}"
+            echo "simple-test=hello-world"
           } >> "$GITHUB_OUTPUT"
+          echo "GITHUB_OUTPUT=$GITHUB_OUTPUT"
+          ls -la "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
 
