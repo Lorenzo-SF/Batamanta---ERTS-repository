@@ -106,7 +106,7 @@ jobs:
           echo "regenerate_from_zero=true — deleting every release and wiping MANIFEST.json"
           for tag in $(gh release list --json tagName -q '.[].tagName'); do
             echo "  deleting release $tag"
-            gh release delete "$tag" --yes --cleanup-tags || true
+            gh release delete "$tag" --yes --cleanup-tag || true
           done
           echo '{}' > MANIFEST.json
           git config user.name  "github-actions[bot]"
