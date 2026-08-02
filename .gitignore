@@ -26,3 +26,5 @@ Icon
 .Trash-*
 Thumbs.db
 ehthumbs.db
+
+dist/

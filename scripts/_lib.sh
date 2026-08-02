@@ -200,7 +200,12 @@ create_release() {
   local tag="$1" title="$2" notes="$3"
   if release_exists "$tag"; then return 0; fi
   log "creating release $tag"
-  gh release create "$tag" --title "$title" --notes "$notes"
+  # --target main: attach the release to the current tip of `main` instead
+  # of requiring a pre-existing local tag. When the pipeline runs in CI the
+  # tag is already on the remote, but in local execution `gh` would create
+  # a stale local tag and refuse the upload. This flag is a no-op in CI
+  # (where the tag already exists at that SHA) and a fix in local runs.
+  gh release create "$tag" --title "$title" --notes "$notes" --target main
 }
 
 upload_asset() {
@@ -402,16 +407,26 @@ manifest_read() {
 
 manifest_set_entry() {
   # manifest_set_entry <version> <key> <url>
+  #
+  # In CI jq is always installed. In local runs (especially on Windows Git
+  # Bash) jq is usually missing — the per-asset manifest update then has
+  # to fall back gracefully, otherwise the whole build aborts on the very
+  # first release. We log a warning and keep going; the safety net is
+  # `scripts/local/regenerate-manifest.{py,ps1}` which rebuilds the whole
+  # manifest from the actual release assets after the run.
   local v="$1" key="$2" url="$3"
   if command -v jq >/dev/null 2>&1; then
     local tmp
     tmp="$(mktemp)"
-    jq --arg v "OTP-$v" --arg k "$key" --arg u "$url" \
-       '.[$v][$k] = $u' "$MANIFEST" > "$tmp"
-    mv "$tmp" "$MANIFEST"
+    if jq --arg v "OTP-$v" --arg k "$key" --arg u "$url" \
+         '.[$v][$k] = $u' "$MANIFEST" > "$tmp"; then
+      mv "$tmp" "$MANIFEST"
+    else
+      warn "manifest_set_entry: jq failed for OTP-$v/$key, skipping this entry (regenerate-manifest.ps1 will fix it later)"
+      rm -f "$tmp"
+    fi
   else
-    err "jq is required for manifest updates (apt install jq / brew install jq)"
-    return 1
+    warn "manifest_set_entry: jq not found, skipping OTP-$v/$key (regenerate-manifest.ps1 will fix it later)"
   fi
 }
 
