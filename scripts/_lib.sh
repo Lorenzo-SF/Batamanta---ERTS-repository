@@ -167,8 +167,14 @@ run() {
 #  GitHub helpers
 # -----------------------------------------------------------------------------
 gh_auth_header() {
+  # Use BATAMANTA_GITHUB_TOKEN if explicitly set, otherwise fall back to
+  # GH_TOKEN (which GitHub Actions auto-injects as ${{ secrets.GITHUB_TOKEN }}).
+  # Public API endpoints work with just `Accept`, so the third branch
+  # (no auth) is fine for unauthenticated reads.
   if [[ -n "${BATAMANTA_GITHUB_TOKEN:-}" ]]; then
     printf 'Authorization: Bearer %s' "$BATAMANTA_GITHUB_TOKEN"
+  elif [[ -n "${GH_TOKEN:-}" ]]; then
+    printf 'Authorization: Bearer %s' "$GH_TOKEN"
   else
     printf 'Accept: application/vnd.github+json'
   fi
