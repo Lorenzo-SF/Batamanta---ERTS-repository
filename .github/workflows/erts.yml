@@ -141,7 +141,7 @@ jobs:
           # use ubuntu-latest; darwin uses macos-latest; windows uses
           # windows-latest. The matrix carries {version, target, runner} so
           # the build job can `runs-on: ${{ matrix.runner }}` correctly.
-          matrix="$(jq -nc --arg versions "$versions" --arg targets "$targets_filter" '
+          matrix="$(jq -c --arg versions "$versions" --arg targets "$targets_filter" '
             ($versions | split(" ") | map(select(. != ""))) as $vs
             | ($targets  | split(" ") | map(select(. != ""))) as $ts
             | {
@@ -162,6 +162,9 @@ jobs:
                 ]
               }
           ')"
+          # GitHub Actions job outputs are single-line; jq -c (compact) is
+          # required. Without -c the embedded newlines truncate the output
+          # at the first newline and the consuming job's `fromJson` chokes.
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
