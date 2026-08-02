@@ -118,6 +118,8 @@ jobs:
         env:
           DETECT_MIN_VERSION: ${{ inputs.min_version }}
         run: |
+          set +e  # don't auto-abort on the first non-zero exit; we want to
+                 # surface every error before committing an output.
           if [[ -n "${{ inputs.version }}" ]]; then
             versions="${{ inputs.version }}"
             echo "manual override: $versions"
