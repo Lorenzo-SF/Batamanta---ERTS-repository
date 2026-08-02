@@ -3,7 +3,7 @@
 #
 # IMPORTANT: this script is meant to be run on a real macOS host with
 # Homebrew and Xcode CLT installed. From any other host (Linux, Windows)
-# you'll need a macOS runner — see ../.github/workflows/erts.yml for the
+# you'll need a macOS runner â€” see ../.github/workflows/erts.yml for the
 # GitHub Actions matrix that does this.
 #
 # Usage:

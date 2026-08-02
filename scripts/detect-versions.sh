@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  detect-versions.sh — print OTP versions missing from MANIFEST.json
+#  detect-versions.sh â€” print OTP versions missing from MANIFEST.json
 # =============================================================================
 #
 #  Used by the CI workflow as the "detect" job: this emits one X.Y.Z per

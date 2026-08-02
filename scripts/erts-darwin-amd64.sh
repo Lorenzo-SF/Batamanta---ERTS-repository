@@ -3,7 +3,7 @@
 #
 # IMPORTANT: this script is meant to be run on a real macOS host with
 # Homebrew and Xcode CLT installed. From any other host (Linux, Windows)
-# you'll need a macOS Intel runner — see ../.github/workflows/erts.yml
+# you'll need a macOS Intel runner â€” see ../.github/workflows/erts.yml
 # for the GitHub Actions matrix that does this. Note that Apple Silicon
 # Macs running this via Rosetta 2 will work (the binary built is still
 # x86_64) but compilation will be slower.

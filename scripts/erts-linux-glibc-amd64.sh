@@ -6,7 +6,7 @@
 #   ./erts-linux-glibc-amd64.sh              # all pinned versions
 #   ./erts-linux-glibc-amd64.sh 28.4 28.4.2  # specific versions only
 #
-# This is a thin wrapper around _lib.sh::build_target — all the actual logic
+# This is a thin wrapper around _lib.sh::build_target â€” all the actual logic
 # lives there.
 
 set -euo pipefail
