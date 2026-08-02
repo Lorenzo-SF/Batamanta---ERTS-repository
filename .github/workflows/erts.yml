@@ -167,7 +167,11 @@ jobs:
           # `jq -c` (compact) — with pretty-printed JSON the embedded
           # newlines would truncate the output at the first newline and
           # `fromJson` on the consumer side would choke.
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          {
+            echo "matrix=$matrix"
+            echo "matrix-length=${#matrix}"
+            echo "matrix-first-200=${matrix:0:200}"
+          } >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
 
