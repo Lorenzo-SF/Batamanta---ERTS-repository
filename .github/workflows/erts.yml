@@ -170,19 +170,12 @@ jobs:
             done
           done
           matrix="$(jq -nc --argjson items "[$matrix_items]" '{include: $items}')"
-          # GitHub Actions job outputs are single-line, so we use
-          # `jq -c` (compact) — with pretty-printed JSON the embedded
-          # newlines would truncate the output at the first newline and
-          # `fromJson` on the consumer side would choke.
-          {
-            echo "matrix=$matrix"
-            echo "matrix-length=${#matrix}"
-            echo "matrix-first-200=${matrix:0:200}"
-            echo "simple-test=hello-world"
-          } >> "$GITHUB_OUTPUT"
-          echo "GITHUB_OUTPUT=$GITHUB_OUTPUT"
-          ls -la "$GITHUB_OUTPUT"
-          cat "$GITHUB_OUTPUT"
+          # GitHub Actions job outputs are single-line. Using `jq -c`
+          # (compact) avoids the embedded newlines that pretty-printed
+          # JSON would produce — those newlines would truncate the
+          # output at the first newline and `fromJson` on the consumer
+          # side would choke.
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
 
