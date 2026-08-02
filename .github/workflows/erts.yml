@@ -1,0 +1,156 @@
+name: ERTS Mirror
+
+on:
+  # Weekly Monday 06:00 UTC — discover new OTP versions and build what's
+  # missing. Resilient to single-job failures (fail-fast: false) so a broken
+  # arm64 build doesn't cancel the rest.
+  schedule:
+    - cron: "0 6 * * 1"
+
+  # Manual trigger. The `version` and `targets` inputs are forwarded to the
+  # per-target scripts so you can (re)build a single release on demand.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "OTP version to (re)build, e.g. 28.4.2. Leave empty to detect."
+        required: false
+        type: string
+      targets:
+        description: "Comma-separated targets to build. Leave empty for all."
+        required: false
+        type: string
+        default: "linux-glibc-amd64,linux-glibc-arm64,linux-musl-amd64,linux-musl-arm64,darwin-arm64,windows-amd64,windows-arm64"
+
+permissions:
+  contents: write   # to create releases + push manifest changes
+
+jobs:
+  # -------------------------------------------------------------------------
+  #  detect — discover which (target, version) pairs are missing. Outputs
+  #  a JSON matrix consumed by the build job.
+  # -------------------------------------------------------------------------
+  detect:
+    name: Detect missing versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gh + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh
+
+      - name: Authenticate gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | gh auth login --with-token
+
+      - name: Detect missing versions
+        id: detect
+        run: |
+          # Use the workflow_dispatch version if provided, otherwise auto-detect.
+          if [[ -n "${{ inputs.version }}" ]]; then
+            versions="${{ inputs.version }}"
+            echo "manual override: $versions"
+          else
+            versions="$(./scripts/detect-versions.sh stable | tr '\n' ' ')"
+            if [[ -z "$versions" ]]; then
+              echo "no new versions found"
+              echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "missing versions: $versions"
+          fi
+          # Filter targets by workflow_dispatch `targets` if present.
+          if [[ -n "${{ inputs.targets }}" ]]; then
+            targets_filter="${{ inputs.targets }}"
+          else
+            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-arm64 windows-amd64 windows-arm64"
+          fi
+          # Build the matrix JSON.
+          matrix="$(jq -nc --arg versions "$versions" --arg targets "$targets_filter" '
+            ($versions | split(" ") | map(select(. != ""))) as $vs
+            | ($targets  | split(" ") | map(select(. != ""))) as $ts
+            | { include: [ $vs[] as $v | $ts[] as $t | { version: $v, target: $t } ] }
+          ')"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "computed matrix:"
+          echo "$matrix" | jq .
+
+  # -------------------------------------------------------------------------
+  #  build — one job per (target, version) pair. Each runs the appropriate
+  #  script in `scripts/`.
+  # -------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.target }} / OTP ${{ matrix.version }}
+    needs: detect
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc 2>/dev/null || true
+          sudo apt-get clean
+
+      - name: Install gh, jq, docker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh
+
+      - name: Authenticate gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | gh auth login --with-token
+
+      - name: Run ${{ matrix.target }} build
+        env:
+          BATAMANTA_DRY_RUN: "0"
+          BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./scripts/*.sh
+          ./scripts/erts-${{ matrix.target }}.sh ${{ matrix.version }}
+
+      - name: Upload tarball as artifact (debug aid)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-${{ matrix.version }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # -------------------------------------------------------------------------
+  #  manifest-commit — push the updated MANIFEST.json back to main once all
+  #  builds finish. Single job, no matrix.
+  # -------------------------------------------------------------------------
+  manifest-commit:
+    name: Commit MANIFEST.json
+    needs: build
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Commit & push any manifest changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [[ -n "$(git status --porcelain MANIFEST.json)" ]]; then
+            git add MANIFEST.json
+            git commit -m "chore(erts): update MANIFEST.json [skip ci]"
+            git push
+          else
+            echo "no manifest changes"
+          fi
