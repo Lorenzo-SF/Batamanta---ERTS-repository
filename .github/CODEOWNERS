@@ -1,0 +1,5 @@
+# CODEOWNERS
+# Lorenzo is the sole maintainer; he reviews his own PRs.
+# Branch protection is configured (via gh api) to require a CODEOWNERS
+# review but also allow Lorenzo to bypass the rule.
+* @Lorenzo-SF
