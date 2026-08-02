@@ -21,10 +21,17 @@ on:
         required: false
         type: string
       targets:
-        description: "Comma-separated targets. Leave empty for all 8."
+        description: "Space-separated list of targets to build. Commas also work. Leave empty for the CI default (the 4 linux targets)."
         required: false
         type: string
-        default: "linux-glibc-amd64,linux-glibc-arm64,linux-musl-amd64,linux-musl-arm64,darwin-amd64,darwin-arm64,windows-amd64,windows-arm64"
+        # CI default: the 4 Linux targets. The other 3 (darwin-amd64,
+        # darwin-arm64, windows-amd64) are intentionally NOT in the CI
+        # matrix because they require macos/windows runners (paid plan
+        # or self-hosted). They are built manually with the scripts in
+        # `scripts/local/` (regenerate-darwin.sh, regenerate-windows-amd64.sh,
+        # regenerate-linux-amd64.sh). Override this with any subset of
+        # the 7 supported targets — see scripts/_lib.sh for the full list.
+        default: "linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64"
       regenerate_from_zero:
         description: "Delete every existing release and MANIFEST entry, then rebuild from scratch. DANGEROUS."
         required: false
@@ -69,6 +76,12 @@ jobs:
             echo "checking $f"
             bash -n "$f"
           done
+
+      - name: jq on every local script
+        if: always()
+        run: |
+          set -e
+          python3 -c "import ast; [ast.parse(open(f, encoding='utf-8').read()) for f in __import__('glob').glob('scripts/local/*.py')]; print('py OK')"
 
       - name: jq on MANIFEST.json
         run: |
@@ -142,8 +155,11 @@ jobs:
           if [[ -n "${{ inputs.targets }}" ]]; then
             targets_filter="${{ inputs.targets }}"
           else
-            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-amd64"
+            targets_filter="linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64"
           fi
+          # Accept both space- and comma-separated lists for ergonomics.
+          # The for-loop below uses whitespace as the separator.
+          targets_filter="${targets_filter//,/ }"
           # Build the matrix. We assemble the (version, target, runner)
           # triples with a bash loop and use jq only for the simple JSON
           # wrapping at the end. The previous iteration used jq's
@@ -220,7 +236,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          chmod +x ./scripts/*.sh
+          chmod +x ./scripts/*.sh ./scripts/local/*.sh 2>/dev/null || true
           ./scripts/erts-${{ matrix.target }}.sh ${{ matrix.version }}
 
       - name: Upload tarball as artifact (debug aid)

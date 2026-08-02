@@ -21,8 +21,8 @@
 #  A target is one of:
 #      linux-glibc-amd64, linux-glibc-arm64,
 #      linux-musl-amd64,  linux-musl-arm64,
-#      darwin-arm64,
-#      windows-amd64,     windows-arm64
+#      darwin-amd64,      darwin-arm64,
+#      windows-amd64
 #
 #  Public entry points (the per-target scripts only ever call one of these):
 #    * build_target <target>          — process every OTP version that the
@@ -58,9 +58,9 @@ mkdir -p "$SRC_TEMP" "$DIST" "$LOCKS"
 # -----------------------------------------------------------------------------
 #  Target catalog
 # -----------------------------------------------------------------------------
-#  Eight target_key values, one per (so, arch) combination we ship. Every
+#  Seven target_key values, one per (so, arch) combination we ship. Every
 #  release tag (`OTP-X.Y.Z`) should eventually have one tarball/zip for
-#  each of these eight.
+#  each of these seven.
 #
 #  target_key          build_method  docker_image   upstream_asset
 #  ---------------      -----------   ------------   --------------
@@ -70,13 +70,14 @@ mkdir -p "$SRC_TEMP" "$DIST" "$LOCKS"
 #  linux-musl-arm64     docker        alpine:3.19    (compile from source)
 #  darwin-amd64         native        (none)         (compile from source on Mac)
 #  darwin-arm64         native        (none)         (compile from source on Mac)
-#  windows-amd64        download       (none)         otp_win64_VERSION.zip
-#  windows-arm64        download       (none)         PLACEHOLDER (see below)
-# -----------------------------------------------------------------------------
-#  Windows arm64 is a placeholder. The Erlang/OTP project does not yet publish
-#  precompiled arm64 Windows binaries — only `otp_win64_*.zip` (which is x86_64
-#  only). When upstream starts shipping `otp_winarm64_*.zip` (or whatever
-#  they settle on), update `UPSTREAM_ASSET` below.
+#  windows-amd64        download      (none)         otp_win64_VERSION.zip
+#
+#  Windows arm64 is NOT supported. The Erlang/OTP project does not
+#  publish precompiled arm64 Windows binaries (only `otp_win64_*.zip`,
+#  which is x86_64). The upstream `batamanta` library reflects this by
+#  not having a `:windows_arm64` target. Callers on Windows arm64
+#  should use `windows-amd64` (which runs via the x86_64 emulation
+#  layer) until upstream changes this.
 # -----------------------------------------------------------------------------
 
 declare -A TARGET_DOCKER_IMAGE=(
@@ -105,13 +106,11 @@ declare -A TARGET_ASSET=(
   [darwin-amd64]="darwin-amd64.tar.gz"
   [darwin-arm64]="darwin-arm64.tar.gz"
   [windows-amd64]="windows-amd64.zip"
-  [windows-arm64]="windows-arm64.zip"
 )
 #  Whether the source we ship is the upstream precompiled zip (1) or a
 #  locally built tree (0). Targets not listed here default to 0.
 declare -A TARGET_USES_PRECOMPILED=(
   [windows-amd64]=1
-  [windows-arm64]=1
 )
 
 #  Mapping from the target key to the asset name in `erlang/otp` releases.
@@ -119,7 +118,6 @@ declare -A TARGET_USES_PRECOMPILED=(
 #  `VERSION` is replaced by the OTP version at build time.
 declare -A UPSTREAM_ASSET=(
   [windows-amd64]="otp_win64_VERSION.zip"
-  [windows-arm64]="PLACEHOLDER_NO_UPSTREAM_ARM64_WINDOWS"  # OTP doesn't ship this yet
 )
 
 #  OTP version policy:
@@ -130,13 +128,10 @@ declare -A UPSTREAM_ASSET=(
 declare -a OTP_VERSIONS=(
   # Pinned baseline versions. The detect step will append anything new
   # that `erlang/otp` has released and that isn't in the manifest yet.
-  25.0 25.0.1 25.0.2 25.0.3 25.0.4
-  25.1 25.1.1 25.1.2
-  25.2 25.2.1 25.2.2 25.2.3
-  25.3 25.3.1 25.3.2
-  26.0 26.0.1 26.0.2
-  26.1 26.1.1 26.1.2
-  26.2 26.2.1 26.2.2 26.2.3 26.2.4 26.2.5
+  # Floor is 27.0 — we don't ship legacy ERTS for older OTP. The CI
+  # workflow passes `DETECT_MIN_VERSION=27.0` (configurable via the
+  # `min_version` workflow_dispatch input) to enforce the same floor
+  # at the upstream-detection layer.
   27.0 27.0.1
   27.1 27.1.1 27.1.2 27.1.3
   27.2 27.2.1 27.2.2 27.2.3 27.2.4
@@ -567,17 +562,6 @@ build_target() {
       windows-amd64)
         out="$DIST/$asset"
         process_windows_zip "$v" "$out"
-        ;;
-      windows-arm64)
-        # Placeholder: Erlang/OTP does not yet publish precompiled arm64
-        # Windows binaries. We refuse loudly instead of silently shipping
-        # the wrong asset. Once upstream starts publishing, change the
-        # `UPSTREAM_ASSET` map above to point at the new asset name and
-        # re-implement `process_windows_zip` to handle it (or fork this
-        # branch into a new `process_windows_arm64_zip` helper).
-        err "  windows-arm64: upstream erlang/otp does not yet publish arm64 Windows binaries."
-        err "  See the comment block at the top of this file for the workaround plan."
-        return 1
         ;;
       *)
         err "  unknown target $target"; return 1 ;;
