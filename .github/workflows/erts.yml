@@ -178,6 +178,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      # Maximum number of jobs to run concurrently. Without this, GitHub
+      # tries to run all (target × version) jobs at once and the runner
+      # pool is exhausted for free-tier repos. 20 is the documented max
+      # for ubuntu-latest on public repos.
+      max-parallel: 20
     steps:
       - uses: actions/checkout@v4
 
