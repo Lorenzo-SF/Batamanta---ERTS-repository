@@ -296,7 +296,14 @@ download_source_tarball() {
   log "downloading otp_src_$v.tar.gz"
   curl -fLsL --retry 5 \
     "https://github.com/erlang/otp/releases/download/OTP-$v/otp_src_$v.tar.gz" \
-    -o "$out"
+    -o "$out" || {
+    warn "no upstream source tarball for OTP-$v — skipping"
+    return 1
+  }
+  if [[ ! -s "$out" ]]; then
+    warn "downloaded source for OTP-$v is empty — skipping"
+    return 1
+  fi
   printf '%s\n' "$out"
 }
 
@@ -329,6 +336,15 @@ docker_build_linux() {
 
   local runner="$SRC_TEMP/build_runner_${asset}.sh"
   local out="$DIST/$asset"
+
+  # Make sure the temp dir exists (the cleanup trap removes it on EXIT, but
+  # build_target also wipes it between calls — and the next docker_build_linux
+  # invocation might run before mkdir -p fires if SRC_TEMP is gone).
+  mkdir -p "$SRC_TEMP"
+  # Defensive: if a previous run left a directory at this exact path
+  # (e.g. from a partial docker mount), remove it so `cat >` can create
+  # the file fresh.
+  rm -rf "$runner"
 
   cat > "$runner" <<EOF
 set -e
@@ -706,7 +722,10 @@ build_target() {
     ok "$v / $target"
   done
 
-  rm -rf "$SRC_TEMP"
+  # Don't wipe SRC_TEMP here — the cleanup trap handles it on EXIT, and
+  # a subsequent `build_target` call (e.g. glibc → musl in the same run)
+  # benefits from the cached source tarballs. Wiping between calls used
+  # to cause "No such file or directory" failures on the musl side.
 }
 
 # -----------------------------------------------------------------------------
