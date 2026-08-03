@@ -368,13 +368,34 @@ EOF
     tarball_win="$(cygpath -w "$tarball")"
     dist_win="$(cygpath -w "$DIST")"
     runner_win="$(cygpath -w "$runner")"
-    MSYS_NO_PATHCONV=1 run docker run --rm --privileged --net=host \
-      --platform "$platform" \
-      --ulimit nofile=1024:1024 \
-      -v "$tarball_win:/src.tar.gz:ro" \
-      -v "$dist_win:/dist" \
-      -v "$runner_win:/build.sh:ro" \
-      "$image" bash /build.sh || return 1
+    # On MSYS2/Git Bash, MSYS auto-rewrites POSIX-looking args to Windows
+    # paths when invoking native Windows binaries. That breaks `docker run`
+    # in two ways: the trailing `sh /build.sh` becomes
+    # `sh C:/Program Files/Git/build.sh`, and the `:` separator inside
+    # `-v` mount specs gets misparsed as a path separator (writing the
+    # tarball to a literal `…tar.gz;C` file). Setting MSYS_NO_PATHCONV=1
+    # as a *prefix* on the docker invocation itself disables that for
+    # this single command — it has to be on the binary, not on the
+    # function wrapper, because MSYS reads the variable from the child
+    # process environment, not the parent shell.
+    if [[ "${BATAMANTA_DRY_RUN:-0}" == "1" ]]; then
+      printf '  [dry-run] docker run --rm --privileged --net=host --platform %s -v %s:/src.tar.gz:ro -v %s:/dist -v %s:/build.sh:ro %s bash /build.sh\n' \
+        "$platform" "$tarball_win" "$dist_win" "$runner_win" "$image"
+    else
+      # Redirect docker stdout/stderr to the parent shell's stderr so the
+      # build progress (apt-get output, compile messages) doesn't get
+      # captured by the caller's command substitution `out="$(...)"`. If
+      # we don't, `out` becomes a multi-line mess and gh release upload
+      # later fails with a malformed path — silently, because the run
+      # function still exits 0.
+      MSYS_NO_PATHCONV=1 docker run --rm --privileged --net=host \
+        --platform "$platform" \
+        --ulimit nofile=1024:1024 \
+        -v "$tarball_win:/src.tar.gz:ro" \
+        -v "$dist_win:/dist" \
+        -v "$runner_win:/build.sh:ro" \
+        "$image" bash /build.sh >&2 || return 1
+    fi
   else
     run docker run --rm --privileged --net=host \
       --platform "$platform" \
@@ -382,7 +403,7 @@ EOF
       -v "$tarball:/src.tar.gz:ro" \
       -v "$DIST:/dist" \
       -v "$runner:/build.sh:ro" \
-      "$image" bash /build.sh || return 1
+      "$image" bash /build.sh >&2 || return 1
   fi
 
   printf '%s\n' "$out"
