@@ -149,6 +149,40 @@ warn()  { printf '%s \033[33mWARN\033[0m %s\n' "$LOG_PREFIX" "$*" >&2; }
 err()   { printf '%s \033[31mERR\033[0m  %s\n' "$LOG_PREFIX" "$*" >&2; }
 ok()    { printf '%s \033[32mOK\033[0m\n'   "$LOG_PREFIX" "$*" >&2; }
 
+# -----------------------------------------------------------------------------
+#  GitHub auth bootstrap
+# -----------------------------------------------------------------------------
+#  Local runs on Windows can lose GH_TOKEN across the PowerShell→bash
+#  boundary depending on how the wrapper is invoked (env scrubbing, keyring
+#  re-auth, etc). gh CLI then prints "To get started with GitHub CLI" and
+#  every release upload fails silently. We try to recover from a few common
+#  sources so local builds Just Work.
+if [[ -z "${GH_TOKEN:-}" && -n "${BATAMANTA_GITHUB_TOKEN:-}" ]]; then
+  export GH_TOKEN="$BATAMANTA_GITHUB_TOKEN"
+fi
+if [[ -z "${GH_TOKEN:-}" ]]; then
+  # Common locations for secrets.ps1 on this dev box.
+  for cand in \
+    "$HOME/Documents/PowerShell/secrets.ps1" \
+    "$USERPROFILE/Documents/PowerShell/secrets.ps1" \
+    "./secrets.ps1"; do
+    if [[ -f "$cand" ]]; then
+      # Match either `$Script:GH_TOKEN = '...'` or `$env:GH_TOKEN = '...'`
+      # and grab the first quoted value. We use awk instead of grep -P for
+      # portability with Git Bash (no -P flag in BSD grep on some setups).
+      _tok="$(awk -F"'" '/GH_TOKEN[[:space:]]*=/{ for (i=2;i<=NF;i+=2) { gsub(/^[[:space:]]+/,"",$i); if (length($i) > 20) { print $i; exit } } }' "$cand" 2>/dev/null || true)"
+      if [[ -n "$_tok" ]]; then
+        export GH_TOKEN="$_tok"
+        log "loaded GH_TOKEN from $cand"
+        break
+      fi
+    fi
+  done
+fi
+if [[ -z "${GH_TOKEN:-}" ]]; then
+  warn "GH_TOKEN not set — gh release create/upload will fail. Source secrets.ps1 or set BATAMANTA_GITHUB_TOKEN before running."
+fi
+
 run() {
   # run <cmd...> — execute, respecting BATAMANTA_DRY_RUN
   if [[ "${BATAMANTA_DRY_RUN:-0}" == "1" ]]; then
@@ -300,13 +334,34 @@ EOF
   esac
   sed -i "s/\\\$ARCH/$arch/g" "$runner"
 
-  run docker run --rm --privileged --net=host \
-    --platform "$platform" \
-    --ulimit nofile=1024:1024 \
-    -v "$tarball:/src.tar.gz:ro" \
-    -v "$DIST:/dist" \
-    -v "$runner:/build.sh:ro" \
-    "$image" sh /build.sh
+  # MSYS2 / Git Bash auto-rewrites POSIX-looking args to Windows paths when
+  # invoking native Windows binaries (docker.exe). The volume mounts work
+  # fine, but the trailing `sh /build.sh` argument gets translated to
+  # `sh C:/Program Files/Git/build.sh` and the container can't find it.
+  # Fix: pre-convert the -v paths with cygpath -w (so MSYS leaves them
+  # alone) and export MSYS_NO_PATHCONV=1 for the docker call so the
+  # entrypoint `/build.sh` is left untouched.
+  if [[ "${OSTYPE:-}" == msys* ]] || uname -s 2>/dev/null | grep -qi mingw; then
+    local tarball_win dist_win runner_win
+    tarball_win="$(cygpath -w "$tarball")"
+    dist_win="$(cygpath -w "$DIST")"
+    runner_win="$(cygpath -w "$runner")"
+    MSYS_NO_PATHCONV=1 run docker run --rm --privileged --net=host \
+      --platform "$platform" \
+      --ulimit nofile=1024:1024 \
+      -v "$tarball_win:/src.tar.gz:ro" \
+      -v "$dist_win:/dist" \
+      -v "$runner_win:/build.sh:ro" \
+      "$image" sh /build.sh
+  else
+    run docker run --rm --privileged --net=host \
+      --platform "$platform" \
+      --ulimit nofile=1024:1024 \
+      -v "$tarball:/src.tar.gz:ro" \
+      -v "$DIST:/dist" \
+      -v "$runner:/build.sh:ro" \
+      "$image" sh /build.sh
+  fi
 
   printf '%s\n' "$out"
 }
