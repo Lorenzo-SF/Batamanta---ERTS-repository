@@ -160,27 +160,49 @@ ok()    { printf '%s \033[32mOK\033[0m\n'   "$LOG_PREFIX" "$*" >&2; }
 if [[ -z "${GH_TOKEN:-}" && -n "${BATAMANTA_GITHUB_TOKEN:-}" ]]; then
   export GH_TOKEN="$BATAMANTA_GITHUB_TOKEN"
 fi
-if [[ -z "${GH_TOKEN:-}" ]]; then
-  # Common locations for secrets.ps1 on this dev box.
-  for cand in \
-    "$HOME/Documents/PowerShell/secrets.ps1" \
-    "$USERPROFILE/Documents/PowerShell/secrets.ps1" \
-    "./secrets.ps1"; do
-    if [[ -f "$cand" ]]; then
-      # Match either `$Script:GH_TOKEN = '...'` or `$env:GH_TOKEN = '...'`
-      # and grab the first quoted value. We use awk instead of grep -P for
-      # portability with Git Bash (no -P flag in BSD grep on some setups).
-      _tok="$(awk -F"'" '/GH_TOKEN[[:space:]]*=/{ for (i=2;i<=NF;i+=2) { gsub(/^[[:space:]]+/,"",$i); if (length($i) > 20) { print $i; exit } } }' "$cand" 2>/dev/null || true)"
-      if [[ -n "$_tok" ]]; then
-        export GH_TOKEN="$_tok"
-        log "loaded GH_TOKEN from $cand"
-        break
+# Common locations for secrets.ps1 on this dev box. We try this BEFORE
+# falling back to $GH_TOKEN from the environment because PowerShell
+# profiles occasionally leak a stale/cached token into the child bash,
+# which then silently overrides the fresh one in secrets.ps1 and breaks
+# release uploads with mysterious 403s.
+for cand in \
+  "$HOME/Documents/PowerShell/secrets.ps1" \
+  "$USERPROFILE/Documents/PowerShell/secrets.ps1" \
+  "./secrets.ps1"; do
+  if [[ -f "$cand" ]]; then
+    # Match either `$Script:GH_TOKEN = '...'` or `$env:GH_TOKEN = '...'`
+    # and grab the first quoted value. We use awk instead of grep -P for
+    # portability with Git Bash (no -P flag in BSD grep on some setups).
+    _tok="$(awk -F"'" '/GH_TOKEN[[:space:]]*=/{ for (i=2;i<=NF;i+=2) { gsub(/^[[:space:]]+/,"",$i); if (length($i) > 20) { print $i; exit } } }' "$cand" 2>/dev/null || true)"
+    if [[ -n "$_tok" ]]; then
+      if [[ -n "${GH_TOKEN:-}" && "$GH_TOKEN" != "$_tok" ]]; then
+        warn "environment GH_TOKEN differs from $cand — using the file's value (likely fresher)"
       fi
+      export GH_TOKEN="$_tok"
+      log "loaded GH_TOKEN from $cand"
+      break
     fi
-  done
-fi
+  fi
+done
 if [[ -z "${GH_TOKEN:-}" ]]; then
   warn "GH_TOKEN not set — gh release create/upload will fail. Source secrets.ps1 or set BATAMANTA_GITHUB_TOKEN before running."
+fi
+
+# -----------------------------------------------------------------------------
+#  GitHub CLI cache eviction
+# -----------------------------------------------------------------------------
+#  `gh` on Windows caches tokens in the system keyring. Once cached, the
+#  cache wins over $GH_TOKEN from the environment, which means a refreshed
+#  token never gets picked up and you get mysterious 403s on release
+#  upload. Force `gh` to fall back to $GH_TOKEN by clearing the local
+#  credential store on first use.
+if command -v gh >/dev/null 2>&1; then
+  _current="$(gh auth token 2>/dev/null || true)"
+  if [[ -n "$_current" && -n "${GH_TOKEN:-}" && "$_current" != "$GH_TOKEN" ]]; then
+    log "gh auth cache out of sync with GH_TOKEN — clearing local credential store"
+    gh auth logout --hostname github.com >/dev/null 2>&1 || true
+  fi
+  unset _current
 fi
 
 run() {
@@ -352,7 +374,7 @@ EOF
       -v "$tarball_win:/src.tar.gz:ro" \
       -v "$dist_win:/dist" \
       -v "$runner_win:/build.sh:ro" \
-      "$image" sh /build.sh
+      "$image" bash /build.sh || return 1
   else
     run docker run --rm --privileged --net=host \
       --platform "$platform" \
@@ -360,7 +382,7 @@ EOF
       -v "$tarball:/src.tar.gz:ro" \
       -v "$DIST:/dist" \
       -v "$runner:/build.sh:ro" \
-      "$image" sh /build.sh
+      "$image" bash /build.sh || return 1
   fi
 
   printf '%s\n' "$out"
@@ -617,7 +639,10 @@ build_target() {
       linux-glibc-*|linux-musl-*)
         local src
         src="$(download_source_tarball "$v")"
-        out="$(docker_build_linux "$target" "$v" "$src")"
+        out="$(docker_build_linux "$target" "$v" "$src")" || {
+          err "build failed for $v on $target — skipping upload for this version"
+          continue
+        }
         ;;
       darwin-amd64|darwin-arm64)
         local src
