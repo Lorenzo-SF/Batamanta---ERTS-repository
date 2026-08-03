@@ -86,6 +86,16 @@ declare -A TARGET_DOCKER_IMAGE=(
   [linux-musl-amd64]="alpine:3.19"
   [linux-musl-arm64]="alpine:3.19"
 )
+# Entrypoint shell inside the container. Ubuntu ships bash; alpine's default
+# /bin/sh is busybox ash (which doesn't have `[[`), so we run the build
+# under `sh` there. The runner script itself is kept POSIX-compatible
+# (uses `[` instead of `[[`) so it works under either.
+declare -A TARGET_ENTRYPOINT=(
+  [linux-glibc-amd64]="bash"
+  [linux-glibc-arm64]="bash"
+  [linux-musl-amd64]="sh"
+  [linux-musl-arm64]="sh"
+)
 declare -A TARGET_DOCKER_PLATFORM=(
   [linux-glibc-amd64]="linux/amd64"
   [linux-glibc-arm64]="linux/arm64"
@@ -336,7 +346,7 @@ sed -i 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(realpath "\$0")")")"|'
 sed -i 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(realpath "\$0")")")"|' bin/start
 # musl needs its loader colocated with the binaries so the resulting tarball
 # can be executed on a glibc host without a separate musl runtime.
-if [[ -f /lib/ld-musl-\$ARCH.so.1 ]]; then
+if [ -f /lib/ld-musl-\$ARCH.so.1 ]; then
   cp /lib/ld-musl-*.so.1 ./bin/ 2>/dev/null || true
 fi
 # Strip everything that isn't needed at runtime. This is the "clean" variant
@@ -378,9 +388,10 @@ EOF
     # this single command — it has to be on the binary, not on the
     # function wrapper, because MSYS reads the variable from the child
     # process environment, not the parent shell.
+    local entrypoint="${TARGET_ENTRYPOINT[$target]:-sh}"
     if [[ "${BATAMANTA_DRY_RUN:-0}" == "1" ]]; then
-      printf '  [dry-run] docker run --rm --privileged --net=host --platform %s -v %s:/src.tar.gz:ro -v %s:/dist -v %s:/build.sh:ro %s bash /build.sh\n' \
-        "$platform" "$tarball_win" "$dist_win" "$runner_win" "$image"
+      printf '  [dry-run] docker run --rm --privileged --net=host --platform %s -v %s:/src.tar.gz:ro -v %s:/dist -v %s:/build.sh:ro %s %s /build.sh\n' \
+        "$platform" "$tarball_win" "$dist_win" "$runner_win" "$image" "$entrypoint"
     else
       # Redirect docker stdout/stderr to the parent shell's stderr so the
       # build progress (apt-get output, compile messages) doesn't get
@@ -394,16 +405,17 @@ EOF
         -v "$tarball_win:/src.tar.gz:ro" \
         -v "$dist_win:/dist" \
         -v "$runner_win:/build.sh:ro" \
-        "$image" bash /build.sh >&2 || return 1
+        "$image" "$entrypoint" /build.sh >&2 || return 1
     fi
   else
+    local entrypoint="${TARGET_ENTRYPOINT[$target]:-sh}"
     run docker run --rm --privileged --net=host \
       --platform "$platform" \
       --ulimit nofile=1024:1024 \
       -v "$tarball:/src.tar.gz:ro" \
       -v "$DIST:/dist" \
       -v "$runner:/build.sh:ro" \
-      "$image" bash /build.sh >&2 || return 1
+      "$image" "$entrypoint" /build.sh >&2 || return 1
   fi
 
   printf '%s\n' "$out"
