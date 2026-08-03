@@ -683,15 +683,17 @@ build_target() {
     fi
 
     log "  building $v for $target"
-    local out
+    local out src
     case "$target" in
       linux-glibc-*|linux-musl-*)
-        local src
-        src="$(download_source_tarball "$v")"
-        out="$(docker_build_linux "$target" "$v" "$src")" || {
+        if ! src="$(download_source_tarball "$v")"; then
+          err "no source tarball for OTP-$v — skipping"
+          continue
+        fi
+        if ! out="$(docker_build_linux "$target" "$v" "$src")"; then
           err "build failed for $v on $target — skipping upload for this version"
           continue
-        }
+        fi
         ;;
       darwin-amd64|darwin-arm64)
         local src
