@@ -187,11 +187,26 @@ _compute_build_plan() {
   #  is missing from the GitHub releases. The caller turns this into a
   #  build queue. Skips versions that don't have upstream source (the
   #  download would fail anyway).
+  #
+  #  Defensive: bash 3.2 (the default on macOS) + `set -u` will fail with
+  #  a cryptic "OTP_VERSIONS: unbound variable" if the array is empty
+  #  when we try to iterate it. We guard the loop with a length check
+  #  so the failure mode is a clear "nothing to do" instead.
+  if (( ${#OTP_VERSIONS[@]} == 0 )); then
+    log "  OTP_VERSIONS is empty — nothing to plan"
+    return 0
+  fi
   local targets=("$@")
   local target v tag code url
   for target in "${targets[@]}"; do
+    # Use the same defensive :+ pattern as the rest of the lib: if
+    # the target isn't in TARGET_ASSET, skip it with a clear log line
+    # instead of letting `${ASSOC[$target]}` blow up under `set -u`.
     local asset="${TARGET_ASSET[$target]:-}"
-    [[ -z "$asset" ]] && continue
+    if [[ -z "$asset" ]]; then
+      log "  skipping unknown target: $target"
+      continue
+    fi
     for v in "${OTP_VERSIONS[@]}"; do
       tag="OTP-$v"
       # If we already have a working state entry and the asset is on the
@@ -556,10 +571,10 @@ docker_build_linux() {
   # docker_build_linux <target> <version> <source_tarball>
   #  Echoes the path to the resulting tarball on stdout.
   local target="$1" v="$2" tarball="$3"
-  local platform="${TARGET_DOCKER_PLATFORM[$target]}"
-  local image="${TARGET_DOCKER_IMAGE[$target]}"
-  local deps_cmd="${TARGET_DEPS_CMD[$target]}"
-  local asset="${TARGET_ASSET[$target]}"
+  local platform="${TARGET_DOCKER_PLATFORM[$target]:-}"
+  local image="${TARGET_DOCKER_IMAGE[$target]:-}"
+  local deps_cmd="${TARGET_DEPS_CMD[$target]:-}"
+  local asset="${TARGET_ASSET[$target]:-}"
 
   local runner="$SRC_TEMP/build_runner_${asset}.sh"
   local out="$DIST/$asset"
@@ -677,7 +692,7 @@ native_build_macos() {
   # native_build_macos <version> <source_tarball>
   #  Echoes the path to the resulting tarball on stdout.
   local v="$1" tarball="$2"
-  local asset="${TARGET_ASSET[darwin-arm64]}"
+  local asset="${TARGET_ASSET[darwin-arm64]:-darwin-arm64.tar.gz}"
   local build_dir="$SRC_TEMP/build_$v"
   local out="$DIST/$asset"
 
@@ -891,6 +906,15 @@ build_target() {
   #  script queries the GitHub releases, sees which (target, version)
   #  pairs are missing, and builds only those. Idempotent by design.
   local target="$1"
+  # Sanity check: an invalid target should fail fast with a clear message,
+  # not blow up later with a cryptic "unbound variable" under `set -u`
+  # when something tries `${TARGET_ASSET[$target]}` and the key doesn't
+  # exist (bash 3.2 + set -u errors on missing assoc subscripts).
+  if [[ -z "${TARGET_ASSET[$target]:-}" ]]; then
+    err "unknown target: '$target'"
+    err "valid targets: linux-glibc-amd64, linux-glibc-arm64, linux-musl-amd64, linux-musl-arm64, darwin-amd64, darwin-arm64, windows-amd64"
+    return 2
+  fi
   shift
   local versions=() auto_plan=0 discover=0
   while [[ $# -gt 0 ]]; do
@@ -994,7 +1018,7 @@ EOF
     versions=("${filtered[@]}")
   fi
 
-  local asset="${TARGET_ASSET[$target]}"
+  local asset="${TARGET_ASSET[$target]:-}"
   local key="${asset%.tar.gz}"
   if [[ "$asset" == *.zip ]]; then
     key="${asset%.zip}"
