@@ -140,6 +140,89 @@ with open(p, 'w') as f: json.dump(d, f, indent=2)
   fi
 }
 
+# -----------------------------------------------------------------------------
+#  Discovery: find what's missing in our releases
+# -----------------------------------------------------------------------------
+#  These two functions let the local scripts (and the CI workflow) answer:
+#    1. "What stable X.Y.Z OTP versions exist upstream that we don't ship?"
+#       (_discover_upstream_versions)
+#    2. "For our pinned baseline, which (version, target) pairs are missing
+#        on the GitHub release?" (_compute_build_plan)
+#
+#  Together they implement the "just run it and it does the right thing"
+#  contract: the script compares the repo against upstream and builds only
+#  what's actually missing.
+_discover_upstream_versions() {
+  # _discover_upstream_versions [min_version]
+  #  Echo one stable X.Y.Z OTP tag per line that exists on erlang/otp,
+  #  sorted ascending, starting from $1 (default 27.0). Filters out:
+  #    - draft/prerelease (rc, alpha, beta)
+  #    - fourth-level versions (e.g. 28.5.0.1 — only released as patches)
+  #    - 29.0-rc1 etc (anything with a dash)
+  #  Skips versions whose source tarball returns 404 from GitHub.
+  local min="${1:-27.0}"
+  local tags
+  tags=$(gh release list --repo erlang/otp --limit 300 --json tagName \
+    --jq '.[] | select(.tagName | startswith("OTP-")) | .tagName' 2>/dev/null \
+    | grep -E '^OTP-[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sed 's/^OTP-//' \
+    | sort -V) || return 1
+  local v code
+  for v in $tags; do
+    # Enforce the minimum
+    if [[ "$(printf '%s\n%s\n' "$min" "$v" | sort -V | head -n1)" != "$min" ]]; then
+      continue
+    fi
+    code=$(curl -s -o /dev/null -w "%{http_code}" \
+      "https://github.com/erlang/otp/releases/download/OTP-$v/otp_src_$v.tar.gz" 2>/dev/null)
+    if [[ "$code" == "302" || "$code" == "200" ]]; then
+      echo "$v"
+    fi
+  done
+}
+
+_compute_build_plan() {
+  # _compute_build_plan <target1> [target2...]
+  #  Echo "<target> <version>" lines for every (target, version) pair that
+  #  is missing from the GitHub releases. The caller turns this into a
+  #  build queue. Skips versions that don't have upstream source (the
+  #  download would fail anyway).
+  local targets=("$@")
+  local target v tag code url
+  for target in "${targets[@]}"; do
+    local asset="${TARGET_ASSET[$target]:-}"
+    [[ -z "$asset" ]] && continue
+    for v in "${OTP_VERSIONS[@]}"; do
+      tag="OTP-$v"
+      # If we already have a working state entry and the asset is on the
+      # release, skip. State is the primary cache.
+      if [[ -z "${BATAMANTA_FORCE:-}" ]] \
+         && [[ "$(_state_get "$target/$v")" == "done" ]] \
+         && asset_in_release "$tag" "$asset"; then
+        continue
+      fi
+      # Live check against GitHub: if the asset is on the release, skip
+      # (handles the case where the state file is missing/stale).
+      if [[ -z "${BATAMANTA_FORCE:-}" ]] \
+         && asset_in_release "$tag" "$asset"; then
+        continue
+      fi
+      # For source-based targets, also verify the upstream tarball exists.
+      # If 404, don't queue it (would just fail again).
+      case "$target" in
+        linux-glibc-*|linux-musl-*|darwin-*)
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://github.com/erlang/otp/releases/download/$tag/otp_src_$v.tar.gz" 2>/dev/null)
+          if [[ "$code" != "302" && "$code" != "200" ]]; then
+            continue
+          fi
+          ;;
+      esac
+      echo "$target $v"
+    done
+  done
+}
+
 # Clean stale lock files from a previous run that died (Ctrl-C, crash, OOM).
 # Anything older than LOCK_MAX_AGE_SECONDS is assumed abandoned.
 _clean_stale_locks() {
@@ -802,9 +885,14 @@ build_target() {
   #  target (e.g. `build_target linux-glibc-amd64 --force 28.4.2`).
   #  State is persisted to .build-state.json so a crashed or interrupted
   #  run can resume from where it left off.
+  #
+  #  If no versions are passed AND --auto is set (or this is the only
+  #  call in the script), the build plan is computed automatically: the
+  #  script queries the GitHub releases, sees which (target, version)
+  #  pairs are missing, and builds only those. Idempotent by design.
   local target="$1"
   shift
-  local versions=()
+  local versions=() auto_plan=0 discover=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --force)     BATAMANTA_FORCE=1; shift ;;
@@ -813,12 +901,18 @@ build_target() {
       --status)    BATAMANTA_STATUS_ONLY=1; shift ;;
       --retries=*) BATAMANTA_RETRIES="${1#--retries=}"; shift ;;
       --no-upload) BATAMANTA_NO_UPLOAD=1; shift ;;
+      --auto)      auto_plan=1; shift ;;
+      --discover)  discover=1; shift ;;
+      --plan)      auto_plan=1; BATAMANTA_STATUS_ONLY=1; shift ;;
       --help|-h)
         cat <<EOF
 Usage: build_target <target> [version...] [flags]
   --force      rebuild even if the asset is already on the release
   --only=V1,V2 only build these versions
   --target=T   only build this target (when called via regenerate-all.sh)
+  --auto       auto-compute the build plan (only build what's missing)
+  --plan       like --auto --status: show what would be built, don't build
+  --discover   query erlang/otp for new X.Y.Z versions not in our baseline
   --status     print per-version status and exit
   --retries=N  network/docker retry count (default 3)
   --no-upload  build but don't push to GitHub
@@ -829,6 +923,62 @@ EOF
       *) versions+=("$1"); shift ;;
     esac
   done
+
+  # --discover: query upstream and optionally add new versions to our baseline.
+  if [[ "$discover" == "1" ]]; then
+    log "==> discovering upstream OTP versions..."
+    local upstream_existing=() upstream_new=() uv
+    while IFS= read -r uv; do
+      [[ -z "$uv" ]] && continue
+      local found=0
+      for v in "${OTP_VERSIONS[@]}"; do
+        [[ "$v" == "$uv" ]] && found=1 && break
+      done
+      if (( found )); then
+        upstream_existing+=("$uv")
+      else
+        upstream_new+=("$uv")
+      fi
+    done < <(_discover_upstream_versions)
+    log "  ${#upstream_existing[@]} upstream versions already in our baseline"
+    if [[ ${#upstream_new[@]} -gt 0 ]]; then
+      log "  ${#upstream_new[@]} new upstream versions found:"
+      for uv in "${upstream_new[@]}"; do
+        log "    $uv"
+      done
+      if [[ "${BATAMANTA_FORCE:-0}" == "1" ]] || [[ -t 0 ]]; then
+        # Interactive or forced: extend the baseline in this process only.
+        # The caller can persist by editing scripts/_lib.sh if they want.
+        OTP_VERSIONS+=("${upstream_new[@]}")
+        log "  added ${#upstream_new[@]} new version(s) to the build queue for this run"
+      else
+        log "  (run interactively or with --force to include them in this run)"
+      fi
+    fi
+  fi
+
+  # --auto / --plan: replace versions[] with the build plan.
+  if [[ "$auto_plan" == "1" ]] && [[ ${#versions[@]} -eq 0 ]]; then
+    local plan
+    plan=$(_compute_build_plan "$target" 2>/dev/null)
+    if [[ -z "$plan" ]]; then
+      log "==> build plan for $target: nothing to do (all up to date)"
+      return 0
+    fi
+    log "==> build plan for $target:"
+    while IFS= read -r line; do
+      log "    build $line"
+    done <<< "$plan"
+    if [[ "${BATAMANTA_STATUS_ONLY:-0}" == "1" ]]; then
+      return 0  # --plan: just print, don't build
+    fi
+    # Turn "<target> <version>" lines into a versions array
+    versions=()
+    while IFS= read -r line; do
+      versions+=("${line#* }")
+    done <<< "$plan"
+  fi
+
   if [[ ${#versions[@]} -eq 0 ]]; then
     versions=("${OTP_VERSIONS[@]}")
   fi
