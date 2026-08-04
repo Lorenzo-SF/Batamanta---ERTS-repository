@@ -731,6 +731,7 @@ native_build_macos() {
   local build_dir="$SRC_TEMP/build_$v"
   local out="$DIST/$asset"
   local build_log="$SRC_TEMP/build_${v}.log"
+  local runner="$SRC_TEMP/build_runner_macos_${v}.sh"
 
   local openssl_dir
   openssl_dir="$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl@1.1 2>/dev/null || true)"
@@ -738,31 +739,47 @@ native_build_macos() {
     err "Homebrew openssl not found. Install with: brew install openssl@3"
     return 1
   fi
+  local ncores
+  ncores="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
+  # Write the build script to disk. This is way more robust than bash -c "..."
+  # with double-quoted strings + escapes. The heredoc below is plain text
+  # except where we explicitly interpolate $openssl_dir, $build_dir, etc.
+  cat > "$runner" <<EOF
+#!/usr/bin/env bash
+set -e
+export ERL_TOP="$build_dir"
+export LDFLAGS="-L$openssl_dir/lib"
+export CPPFLAGS="-I$openssl_dir/include"
+export PKG_CONFIG_PATH="$openssl_dir/lib/pkgconfig"
+cd "$build_dir"
+./otp_build autoconf
+./configure --prefix="$build_dir/opt_erlang" \\
+  --without-javac --without-odbc --without-wx \\
+  --without-debugger --without-observer \\
+  --with-ssl="$openssl_dir"
+make -j$ncores
+make install
+cd "$build_dir/opt_erlang/lib/erlang"
+# BSD sed: -i '' means edit in place, no backup. The replacement uses
+# shell command substitution that will be evaluated when bin/erl runs.
+sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/erl
+sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/start
+# Strip everything that isn't needed at runtime
+rm -rf lib/*/src lib/*/include lib/*/test lib/*/examples
+rm -f  InstallInfo Install.ini
+tar -czf "$out" .
+EOF
+  chmod +x "$runner"
 
   log "    configuring + building + installing (this takes 5-15 min)..."
   log "    full log: $build_log"
-  if ! run bash -c "
-    set -e
-    cd '$build_dir'
-    export ERL_TOP=\"\$(pwd)\"
-    ./otp_build autoconf
-    ./configure --prefix='$build_dir/opt_erlang' \\
-      --without-javac --without-odbc --without-wx \\
-      --without-debugger --without-observer \\
-      --with-ssl='$openssl_dir'
-    make -j\$(sysctl -n hw.ncpu)
-    make install
-    cd '$build_dir/opt_erlang/lib/erlang'
-    sed -i '' 's|^ROOTDIR=.*|ROOTDIR=\"\$(dirname \"\$(dirname \"\$(PWD)\")\")\"|' bin/erl
-    sed -i '' 's|^ROOTDIR=.*|ROOTDIR=\"\$(dirname \"\$(dirname \"\$(PWD)\")\")\"|' bin/start
-    rm -rf lib/*/src lib/*/include lib/*/test lib/*/examples
-    rm -f  InstallInfo Install.ini
-    tar -czf '$out' .
-  " >"$build_log" 2>&1; then
+  if ! run "$runner" >"$build_log" 2>&1; then
     err "    build failed for OTP-$v. Tail of log:"
-    tail -20 "$build_log" | sed 's/^/      /' >&2
+    tail -30 "$build_log" | sed 's/^/      /' >&2
     return 1
   fi
+  rm -f "$runner"
 
   printf '%s\n' "$out"
 }
