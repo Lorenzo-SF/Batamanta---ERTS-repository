@@ -51,9 +51,121 @@ MANIFEST="$REPO_ROOT/MANIFEST.json"
 SRC_TEMP="$REPO_ROOT/src_temp"
 DIST="$REPO_ROOT/dist"
 LOCKS="$REPO_ROOT/.locks"
+STATE_FILE="$REPO_ROOT/.build-state.json"
 LOG_PREFIX="[batamanta-erts]"
+# Lock files older than this are considered stale (a previous run died
+# without releasing them) and will be cleaned up on the next start.
+LOCK_MAX_AGE_SECONDS=3600
 
 mkdir -p "$SRC_TEMP" "$DIST" "$LOCKS"
+
+# -----------------------------------------------------------------------------
+#  CLI flags
+# -----------------------------------------------------------------------------
+#  Default behavior: skip already-built versions, retry failed ones.
+#  --force            rebuild everything, even if asset is on the release
+#  --only=V1,V2,...   only build these versions (comma-separated)
+#  --target=T1,T2,... only build these targets (glibc/musl/darwin-amd64/...)
+#  --status           print what's done/pending/failed, then exit
+#  --retries=N        network/docker retry count (default 3)
+#  --no-upload        build but don't upload to GitHub
+BATAMANTA_FORCE=0
+BATAMANTA_ONLY_VERSIONS=""
+BATAMANTA_ONLY_TARGETS=""
+BATAMANTA_STATUS_ONLY=0
+BATAMANTA_RETRIES=3
+BATAMANTA_NO_UPLOAD=0
+# Note: flag parsing happens inline in build_target — bash `shift` inside
+# a function only affects the function's local $@, not the caller's.
+
+# -----------------------------------------------------------------------------
+#  State persistence
+# -----------------------------------------------------------------------------
+#  .build-state.json records the result of every (target, version) attempt
+#  so a re-run can skip done versions and retry failed ones without
+#  re-downloading source tarballs or re-uploading assets. Format:
+#
+#    { "linux-glibc-amd64/27.0": {"status":"done","ts":1234},
+#      "linux-musl-amd64/28.0": {"status":"failed","ts":1235,"error":"..."} }
+#
+_state_read() {
+  if [[ -s "$STATE_FILE" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -r 'to_entries[] | "\(.key) \(.value.status)"' "$STATE_FILE" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 -c "import json,sys; d=json.load(open(sys.argv[1])); [print(f'{k} {v[\"status\"]}') for k,v in d.items()]" "$STATE_FILE" 2>/dev/null
+    else
+      # Last-resort: parse with awk (no jq, no python3)
+      awk -F'"' '/"status"/{ for(i=1;i<=NF;i++) if($i~/:/){key=$i; sub(/:/,"",key)} /done|failed|pending/{print prev" "$2; prev=""} {prev=$0}' "$STATE_FILE" 2>/dev/null
+    fi
+  fi
+}
+_state_get() {
+  # _state_get <target>/<version> → "done" | "failed" | "pending" | ""
+  local key="$1"
+  if [[ -s "$STATE_FILE" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -r --arg k "$key" '.[$k].status // empty' "$STATE_FILE" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get(sys.argv[2],{}).get('status',''))" "$STATE_FILE" "$key" 2>/dev/null
+    fi
+  fi
+}
+_state_set() {
+  # _state_set <target>/<version> <status> [error_message]
+  local key="$1" status="$2" error="${3:-}" ts
+  ts=$(date +%s)
+  if command -v jq >/dev/null 2>&1; then
+    local tmp
+    tmp="$(mktemp)"
+    jq --arg k "$key" --arg s "$status" --arg e "$error" --argjson t "$ts" \
+      '.[$k] = {"status":$s,"ts":$t} + (if $e != "" then {"error":$e} else {} end)' \
+      "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import json, sys, os
+p = sys.argv[1]; key = sys.argv[2]; status = sys.argv[3]; ts = int(sys.argv[4]); error = sys.argv[5]
+try:
+    d = json.load(open(p))
+except: d = {}
+d[key] = {'status': status, 'ts': ts}
+if error: d[key]['error'] = error
+with open(p, 'w') as f: json.dump(d, f, indent=2)
+" "$STATE_FILE" "$key" "$status" "$ts" "$error" 2>/dev/null
+  else
+    # No jq, no python — degrade gracefully. We skip state writes rather
+    # than corrupting the file with naive string munging. The script still
+    # works (asset_in_release check provides idempotency on its own).
+    :
+  fi
+}
+
+# Clean stale lock files from a previous run that died (Ctrl-C, crash, OOM).
+# Anything older than LOCK_MAX_AGE_SECONDS is assumed abandoned.
+_clean_stale_locks() {
+  local now lock age
+  # Enable nullglob so a missing dir or no matches yields an empty list
+  # instead of the literal pattern (which would break the loop).
+  shopt -s nullglob
+  now=$(date +%s)
+  for lock in "$LOCKS"/*.lock; do
+    [[ -e "$lock" ]] || continue
+    # Git Bash on Windows doesn't support %Z in stat — fall back to mtime.
+    if stat -c '%Y' "$lock" >/dev/null 2>&1; then
+      age=$((now - $(stat -c '%Y' "$lock")))
+    elif stat -f '%m' "$lock" >/dev/null 2>&1; then
+      age=$((now - $(stat -f '%m' "$lock")))
+    else
+      continue  # can't determine age, leave it
+    fi
+    if (( age > LOCK_MAX_AGE_SECONDS )); then
+      log "removing stale lock ($(($age / 60))m old): $(basename "$lock")"
+      rm -f "$lock"
+    fi
+  done
+  shopt -u nullglob
+}
+_clean_stale_locks
 
 # -----------------------------------------------------------------------------
 #  Target catalog
@@ -283,10 +395,31 @@ upload_asset() {
 # -----------------------------------------------------------------------------
 #  Source-tarball download
 # -----------------------------------------------------------------------------
+_curl_with_backoff() {
+  # _curl_with_backoff <url> <output> [max_attempts]
+  #  curl with exponential backoff. Used for all GitHub asset downloads so a
+  #  transient rate-limit or network blip doesn't fail the whole run.
+  local url="$1" out="$2" max="${3:-$BATAMANTA_RETRIES}" attempt=1 delay=5 rc
+  while (( attempt <= max )); do
+    curl -fLsL --connect-timeout 30 --max-time 600 \
+      "$url" -o "$out" && [[ -s "$out" ]] && return 0
+    rc=$?
+    if (( attempt >= max )); then
+      return $rc
+    fi
+    warn "download attempt $attempt/$max failed (rc=$rc), retrying in ${delay}s"
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt+1))
+  done
+  return 1
+}
+
 download_source_tarball() {
   # download_source_tarball <version>
   #  Echoes the path to the downloaded source tarball.
-  #  Reuses a cached copy if present.
+  #  Reuses a cached copy if present. Returns non-zero if the upstream
+  #  tarball genuinely doesn't exist (404) after all retries.
   local v="$1"
   local out="$SRC_TEMP/otp_src_$v.tar.gz"
   if [[ -s "$out" ]]; then
@@ -294,14 +427,16 @@ download_source_tarball() {
     return 0
   fi
   log "downloading otp_src_$v.tar.gz"
-  curl -fLsL --retry 5 \
+  if ! _curl_with_backoff \
     "https://github.com/erlang/otp/releases/download/OTP-$v/otp_src_$v.tar.gz" \
-    -o "$out" || {
-    warn "no upstream source tarball for OTP-$v — skipping"
-    return 1
-  }
-  if [[ ! -s "$out" ]]; then
-    warn "downloaded source for OTP-$v is empty — skipping"
+    "$out" "$BATAMANTA_RETRIES"; then
+    # Distinguish 404 (genuinely doesn't exist) from other failures.
+    # If the file is empty/missing after all retries, treat as 404.
+    if [[ ! -s "$out" ]]; then
+      warn "no upstream source tarball for OTP-$v — skipping"
+      return 1
+    fi
+    err "download failed for OTP-$v after $BATAMANTA_RETRIES attempts"
     return 1
   fi
   printf '%s\n' "$out"
@@ -316,10 +451,16 @@ download_precompiled() {
   #  saves it to <output_path>. We don't filter anything yet — the cleanup
   #  step happens later (`strip_precompiled`).
   local v="$1" out="$2"
+  if [[ -s "$out" ]]; then
+    return 0
+  fi
   log "downloading precompiled otp_win64_$v.zip from erlang/otp"
-  curl -fLsL --retry 5 \
+  _curl_with_backoff \
     "https://github.com/erlang/otp/releases/download/OTP-$v/otp_win64_$v.zip" \
-    -o "$out"
+    "$out" "$BATAMANTA_RETRIES" || {
+    err "failed to download Windows zip for OTP-$v"
+    return 1
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -418,6 +559,9 @@ EOF
       MSYS_NO_PATHCONV=1 docker run --rm --privileged --net=host \
         --platform "$platform" \
         --ulimit nofile=1024:1024 \
+        --label "batamanta.build=1" \
+        --label "batamanta.target=$target" \
+        --label "batamanta.version=$v" \
         -v "$tarball_win:/src.tar.gz:ro" \
         -v "$dist_win:/dist" \
         -v "$runner_win:/build.sh:ro" \
@@ -428,6 +572,9 @@ EOF
     run docker run --rm --privileged --net=host \
       --platform "$platform" \
       --ulimit nofile=1024:1024 \
+      --label "batamanta.build=1" \
+      --label "batamanta.target=$target" \
+      --label "batamanta.version=$v" \
       -v "$tarball:/src.tar.gz:ro" \
       -v "$DIST:/dist" \
       -v "$runner:/build.sh:ro" \
@@ -645,15 +792,53 @@ detect_new_versions() {
 #  Per-target driver
 # -----------------------------------------------------------------------------
 build_target() {
-  # build_target <target> [version...]
-  #  For each (target, version) pair, build if missing, then upload + update
-  #  the manifest. Skips silently when the release asset is already present
-  #  (unless BATAMANTA_FORCE=1).
+  # build_target <target> [version...|flag...]
+  #  The first arg is always the target. Everything else is a mix of
+  #  version strings and flags; flags are consumed, the rest become
+  #  versions to build. This means flags can appear anywhere after the
+  #  target (e.g. `build_target linux-glibc-amd64 --force 28.4.2`).
+  #  State is persisted to .build-state.json so a crashed or interrupted
+  #  run can resume from where it left off.
   local target="$1"
   shift
-  local versions=("$@")
+  local versions=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force)     BATAMANTA_FORCE=1; shift ;;
+      --only=*)    BATAMANTA_ONLY_VERSIONS="${1#--only=}"; shift ;;
+      --target=*)  BATAMANTA_ONLY_TARGETS="${1#--target=}"; shift ;;
+      --status)    BATAMANTA_STATUS_ONLY=1; shift ;;
+      --retries=*) BATAMANTA_RETRIES="${1#--retries=}"; shift ;;
+      --no-upload) BATAMANTA_NO_UPLOAD=1; shift ;;
+      --help|-h)
+        cat <<EOF
+Usage: build_target <target> [version...] [flags]
+  --force      rebuild even if the asset is already on the release
+  --only=V1,V2 only build these versions
+  --target=T   only build this target (when called via regenerate-all.sh)
+  --status     print per-version status and exit
+  --retries=N  network/docker retry count (default 3)
+  --no-upload  build but don't push to GitHub
+
+Safe to re-run. State persists in .build-state.json.
+EOF
+        return 0 ;;
+      *) versions+=("$1"); shift ;;
+    esac
+  done
   if [[ ${#versions[@]} -eq 0 ]]; then
     versions=("${OTP_VERSIONS[@]}")
+  fi
+  # Filter by --only= if set
+  if [[ -n "$BATAMANTA_ONLY_VERSIONS" ]]; then
+    local filtered=() want v
+    IFS=',' read -ra want <<< "$BATAMANTA_ONLY_VERSIONS"
+    for v in "${versions[@]}"; do
+      for w in "${want[@]}"; do
+        [[ "$v" == "$w" ]] && filtered+=("$v")
+      done
+    done
+    versions=("${filtered[@]}")
   fi
 
   local asset="${TARGET_ASSET[$target]}"
@@ -661,7 +846,7 @@ build_target() {
   if [[ "$asset" == *.zip ]]; then
     key="${asset%.zip}"
   fi
-  log "==> target=$target  asset=$asset  key=$key"
+  log "==> target=$target  asset=$asset  key=$key  versions=${#versions[@]}"
 
   if [[ -z "${TARGET_DOCKER_IMAGE[$target]:-}" \
      && -z "${TARGET_USES_PRECOMPILED[$target]:-}" \
@@ -671,58 +856,166 @@ build_target() {
     return 1
   fi
 
+  # --status: just report, don't build
+  if [[ "$BATAMANTA_STATUS_ONLY" == "1" ]]; then
+    local state_v
+    for v in "${versions[@]}"; do
+      state_v="$(_state_get "$target/$v")"
+      if [[ -z "$state_v" ]]; then
+        if asset_in_release "OTP-$v" "$asset"; then
+          echo "  [$target] OTP-$v  DONE (on release, no state file entry)"
+        else
+          echo "  [$target] OTP-$v  PENDING"
+        fi
+      else
+        echo "  [$target] OTP-$v  $state_v"
+      fi
+    done
+    return 0
+  fi
+
+  # Clean up any orphaned Docker containers from a previous interrupted run.
+  # We name them with the target+version so we can find them.
+  local orphaned
+  orphaned=$(docker ps -aq --filter "label=batamanta.build" 2>/dev/null || true)
+  if [[ -n "$orphaned" ]]; then
+    log "removing $(echo "$orphaned" | wc -l | tr -d ' ') orphaned container(s) from previous run"
+    docker rm -f $orphaned >/dev/null 2>&1 || true
+  fi
+
+  local total=${#versions[@]} done=0 failed=0 skipped=0 i=0
   for v in "${versions[@]}"; do
-    local tag="OTP-$v"
-    if ! release_exists "$tag"; then
-      : # We'll create the release on first upload; nothing to do here.
-    fi
-    if [[ "${BATAMANTA_FORCE:-0}" != "1" ]] \
+    i=$((i+1))
+    local tag="OTP-$v" state_v lock_file
+    state_v="$(_state_get "$target/$v")"
+
+    # Idempotency: if the asset is on the release and we haven't been told
+    # to force, skip. This is the primary idempotency mechanism.
+    if [[ "$BATAMANTA_FORCE" != "1" ]] \
+       && [[ "$state_v" == "done" ]] \
        && asset_in_release "$tag" "$asset"; then
-      log "  $asset already on $tag — skip"
+      log "  [$i/$total] $tag  $asset  already done — skip"
+      done=$((done+1))
+      continue
+    fi
+    # If the asset is on the release but state file doesn't know about it
+    # (e.g. state file was lost), still skip — don't waste a build.
+    if [[ "$BATAMANTA_FORCE" != "1" ]] \
+       && asset_in_release "$tag" "$asset"; then
+      log "  [$i/$total] $tag  $asset  on release — skip (recording state)"
+      _state_set "$target/$v" "done"
+      done=$((done+1))
       continue
     fi
 
-    log "  building $v for $target"
-    local out src
+    # Acquire per-(target,version) lock so a second run on the same target
+    # skips this version instead of fighting for the same Docker container.
+    lock_file="$LOCKS/${target}_${v}.lock"
+    if [[ -e "$lock_file" ]]; then
+      # Lock exists — check if it's stale
+      local age now
+      now=$(date +%s)
+      if stat -c '%Y' "$lock_file" >/dev/null 2>&1; then
+        age=$((now - $(stat -c '%Y' "$lock_file")))
+      elif stat -f '%m' "$lock_file" >/dev/null 2>&1; then
+        age=$((now - $(stat -f '%m' "$lock_file")))
+      else
+        age=0
+      fi
+      if (( age < LOCK_MAX_AGE_SECONDS )); then
+        log "  [$i/$total] $tag  locked by another run (${age}s old) — skip"
+        skipped=$((skipped+1))
+        continue
+      fi
+      # Stale lock — take it
+      log "  [$i/$total] $tag  taking over stale lock (${age}s old)"
+    fi
+    echo "$$ $(date +%s)" > "$lock_file"
+
+    log "  [$i/$total] $tag  building"
+    _state_set "$target/$v" "pending"
+    local out src build_rc=0
     case "$target" in
       linux-glibc-*|linux-musl-*)
         if ! src="$(download_source_tarball "$v")"; then
-          err "no source tarball for OTP-$v — skipping"
+          err "no source tarball for OTP-$v — skip"
+          _state_set "$target/$v" "skipped" "no source tarball"
+          rm -f "$lock_file"
+          skipped=$((skipped+1))
           continue
         fi
         if ! out="$(docker_build_linux "$target" "$v" "$src")"; then
-          err "build failed for $v on $target — skipping upload for this version"
+          err "build failed for $v on $target — skip"
+          _state_set "$target/$v" "failed" "docker build failed"
+          rm -f "$lock_file"
+          failed=$((failed+1))
           continue
         fi
         ;;
       darwin-amd64|darwin-arm64)
-        local src
-        src="$(download_source_tarball "$v")"
+        if ! src="$(download_source_tarball "$v")"; then
+          err "no source tarball for OTP-$v — skip"
+          _state_set "$target/$v" "skipped" "no source tarball"
+          rm -f "$lock_file"
+          skipped=$((skipped+1))
+          continue
+        fi
         local build_dir="$SRC_TEMP/build_$v"
         rm -rf "$build_dir"
         mkdir -p "$build_dir"
         tar -xzf "$src" -C "$build_dir" --strip-components=1
-        out="$(native_build_macos "$v" "$src")"
+        if ! out="$(native_build_macos "$v" "$src")"; then
+          err "native build failed for $v on $target — skip"
+          _state_set "$target/$v" "failed" "native build failed"
+          rm -rf "$build_dir" "$SRC_TEMP/opt_erlang" 2>/dev/null
+          rm -f "$lock_file"
+          failed=$((failed+1))
+          continue
+        fi
         rm -rf "$build_dir" "$SRC_TEMP/opt_erlang"
         ;;
       windows-amd64)
         out="$DIST/$asset"
-        process_windows_zip "$v" "$out"
+        if ! process_windows_zip "$v" "$out"; then
+          err "windows build failed for $v — skip"
+          _state_set "$target/$v" "failed" "windows zip processing failed"
+          rm -f "$lock_file"
+          failed=$((failed+1))
+          continue
+        fi
         ;;
       *)
-        err "  unknown target $target"; return 1 ;;
+        err "  unknown target $target"
+        rm -f "$lock_file"
+        return 1 ;;
     esac
 
-    log "  uploading $asset to $tag"
-    create_release "$tag" "Erlang/OTP $v" \
-      "Automated build of $asset for Erlang/OTP $v."
-    run upload_asset "$tag" "$out"
+    # Upload + manifest (unless --no-upload)
+    if [[ "$BATAMANTA_NO_UPLOAD" != "1" ]]; then
+      log "    uploading $asset to $tag"
+      create_release "$tag" "Erlang/OTP $v" \
+        "Automated build of $asset for Erlang/OTP $v."
+      upload_asset "$tag" "$out" || {
+        err "upload failed for $v — asset is at $out, you can re-run to retry"
+        _state_set "$target/$v" "failed" "upload failed"
+        rm -f "$lock_file"
+        failed=$((failed+1))
+        continue
+      }
+      log "    updating manifest"
+      local url="https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/$tag/$asset"
+      manifest_set_entry "$v" "$key" "$url"
+    else
+      log "    --no-upload set, asset at $out"
+    fi
 
-    log "  updating manifest"
-    local url="https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/$tag/$asset"
-    manifest_set_entry "$v" "$key" "$url"
-    ok "$v / $target"
+    _state_set "$target/$v" "done"
+    rm -f "$lock_file"
+    ok "  [$i/$total] $tag  $target  DONE"
+    done=$((done+1))
   done
+
+  log "==> target=$target  done=$done  failed=$failed  skipped=$skipped  total=$total"
 
   # Don't wipe SRC_TEMP here — the cleanup trap handles it on EXIT, and
   # a subsequent `build_target` call (e.g. glibc → musl in the same run)
@@ -740,13 +1033,43 @@ verify_manifest() {
 }
 
 # -----------------------------------------------------------------------------
-#  Trap to clean up on exit
+#  Trap to clean up on exit / interrupt
 # -----------------------------------------------------------------------------
+#  - On normal EXIT: remove all .lock files (the build is done, the locks
+#    have served their purpose; next run shouldn't see them as stale).
+#  - On SIGINT / SIGTERM (Ctrl-C, OOM kill, timeout): kill any running
+#    containers we started and release all locks so the next run can
+#    resume cleanly.
+_INTERRUPTED=0
+_on_interrupt() {
+  _INTERRUPTED=1
+  echo "" >&2
+  err "interrupted — cleaning up containers and releasing locks"
+  # Kill any batamanta-labelled containers still running
+  local running
+  running=$(docker ps -q --filter "label=batamanta.build" 2>/dev/null || true)
+  if [[ -n "$running" ]]; then
+    docker rm -f $running >/dev/null 2>&1 || true
+  fi
+  # Release all our locks (they have a $$ marker; we know which is ours)
+  if [[ -d "$LOCKS" ]]; then
+    shopt -s nullglob
+    rm -f "$LOCKS"/*.lock
+    shopt -u nullglob
+  fi
+  exit 130
+}
 cleanup() {
-  rm -rf "$SRC_TEMP" 2>/dev/null || true
-  rm -rf "$LOCKS"     2>/dev/null || true
+  # On normal EXIT, release locks but keep SRC_TEMP (cached tarballs are
+  # useful for the next run; cleanup is opt-in via `rm -rf src_temp`).
+  if [[ -d "$LOCKS" ]]; then
+    shopt -s nullglob
+    rm -f "$LOCKS"/*.lock
+    shopt -u nullglob
+  fi
 }
 trap cleanup EXIT
+trap _on_interrupt INT TERM
 
 # =============================================================================
 #  Entrypoint: when sourced from a per-target script, the script does its

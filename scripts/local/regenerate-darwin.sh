@@ -17,6 +17,9 @@
 #  is a paid plan. This script is the free alternative — run it on your
 #  own Mac whenever you need to (re)build the macOS tarballs.
 #
+#  Robustness: same as the Linux scripts — idempotent, interrupt-safe,
+#  network-resilient. Safe to re-run.
+#
 #  Usage:
 #    # Build all pinned OTP versions for darwin-arm64 (the default — most
 #    # Macs in 2026 are Apple Silicon):
@@ -33,7 +36,13 @@
 #    # Build a specific version:
 #    ./scripts/local/regenerate-darwin.sh 28.4.2
 #
-#  After this script runs, run scripts/local/regenerate-manifest.py to make
+#    # Check status:
+#    ./scripts/local/regenerate-darwin.sh --status
+#
+#    # Force a rebuild:
+#    ./scripts/local/regenerate-darwin.sh --force
+#
+#  After this script runs, run scripts/local/regenerate-manifest.ps1 to make
 #  sure MANIFEST.json lists the new assets.
 # =============================================================================
 
@@ -43,6 +52,13 @@ cd "$(cd "$(dirname "$0")/../.." && pwd)"
 . ./scripts/_lib.sh
 
 log "==> regenerate-darwin.sh (host=$(uname -s)/$(uname -m))"
+
+# --status works on any host (doesn't actually need to be macOS)
+if [[ "${1:-}" == "--status" ]]; then
+  build_target darwin-arm64 "$@"
+  build_target darwin-amd64 "$@"
+  exit $?
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   err "this script must be run on macOS. Detected: $(uname -s)."

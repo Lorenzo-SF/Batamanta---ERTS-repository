@@ -27,4 +27,9 @@ Icon
 Thumbs.db
 ehthumbs.db
 
+# 6. Runtime state for build_target (locks + per-version build state).
+#    These are regenerated on every run; never commit them.
+.locks/
+.build-state.json
+
 dist/
