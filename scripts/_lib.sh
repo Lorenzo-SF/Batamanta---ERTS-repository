@@ -425,7 +425,7 @@ fi
 # release uploads with mysterious 403s.
 for cand in \
   "$HOME/Documents/PowerShell/secrets.ps1" \
-  "$USERPROFILE/Documents/PowerShell/secrets.ps1" \
+  "${USERPROFILE:-}/Documents/PowerShell/secrets.ps1" \
   "./secrets.ps1"; do
   if [[ -f "$cand" ]]; then
     # Match either `$Script:GH_TOKEN = '...'` or `$env:GH_TOKEN = '...'`
