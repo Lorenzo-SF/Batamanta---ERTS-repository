@@ -730,6 +730,7 @@ native_build_macos() {
   local asset="${TARGET_ASSET[darwin-arm64]:-darwin-arm64.tar.gz}"
   local build_dir="$SRC_TEMP/build_$v"
   local out="$DIST/$asset"
+  local build_log="$SRC_TEMP/build_${v}.log"
 
   local openssl_dir
   openssl_dir="$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl@1.1 2>/dev/null || true)"
@@ -738,24 +739,30 @@ native_build_macos() {
     return 1
   fi
 
-  run bash -c "
+  log "    configuring + building + installing (this takes 5-15 min)..."
+  log "    full log: $build_log"
+  if ! run bash -c "
     set -e
     cd '$build_dir'
     export ERL_TOP=\"\$(pwd)\"
-    ./otp_build autoconf > /dev/null 2>&1
+    ./otp_build autoconf
     ./configure --prefix='$build_dir/opt_erlang' \\
       --without-javac --without-odbc --without-wx \\
       --without-debugger --without-observer \\
-      --with-ssl='$openssl_dir' > /dev/null 2>&1
-    make -j\$(sysctl -n hw.ncpu) > /dev/null 2>&1
-    make install > /dev/null 2>&1
+      --with-ssl='$openssl_dir'
+    make -j\$(sysctl -n hw.ncpu)
+    make install
     cd '$build_dir/opt_erlang/lib/erlang'
     sed -i '' 's|^ROOTDIR=.*|ROOTDIR=\"\$(dirname \"\$(dirname \"\$(PWD)\")\")\"|' bin/erl
     sed -i '' 's|^ROOTDIR=.*|ROOTDIR=\"\$(dirname \"\$(dirname \"\$(PWD)\")\")\"|' bin/start
     rm -rf lib/*/src lib/*/include lib/*/test lib/*/examples
     rm -f  InstallInfo Install.ini
     tar -czf '$out' .
-  "
+  " >"$build_log" 2>&1; then
+    err "    build failed for OTP-$v. Tail of log:"
+    tail -20 "$build_log" | sed 's/^/      /' >&2
+    return 1
+  fi
 
   printf '%s\n' "$out"
 }
