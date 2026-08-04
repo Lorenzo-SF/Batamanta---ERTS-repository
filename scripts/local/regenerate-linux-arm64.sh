@@ -34,5 +34,5 @@ if [[ "$(uname -m)" != "aarch64" && "$(uname -m)" != "arm64" ]]; then
   warn "host is $(uname -m) — arm64 builds will run under QEMU emulation (very slow)"
 fi
 
-build_target linux-glibc-arm64 "$@"
-build_target linux-musl-arm64  "$@"
+build_target linux-glibc-arm64 --auto "$@"
+build_target linux-musl-arm64  --auto "$@"

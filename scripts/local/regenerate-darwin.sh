@@ -79,4 +79,4 @@ case "${DARWIN_ARCH:-arm64}" in
   *)     err "DARWIN_ARCH must be 'arm64' or 'amd64' (got '${DARWIN_ARCH:-}')"; exit 2 ;;
 esac
 
-build_target "$target" "$@"
+build_target "$target" --auto "$@"

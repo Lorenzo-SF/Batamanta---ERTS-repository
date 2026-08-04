@@ -133,7 +133,7 @@ if (-not $resolvedPath) { $resolvedPath = $ManifestPath }
 $json | Out-File -FilePath $resolvedPath -Encoding utf8 -NoNewline
 Log "  Wrote $resolvedPath ($((Get-Item $resolvedPath).Length) bytes)"
 
-if (Test-Path ".git") {
+if (Test-Path -Path '.git' -PathType Container) {
   $status = git status --porcelain -- $ManifestPath 2>&1
   if ([string]::IsNullOrWhiteSpace($status)) {
     Log "No manifest changes — nothing to commit"

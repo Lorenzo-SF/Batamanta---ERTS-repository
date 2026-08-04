@@ -69,5 +69,6 @@ fi
 # images, different compilations) so they can be parallelised if you want
 # to speed this up — open two terminals and run this script twice with
 # different env vars. For simplicity, sequential here.
-build_target linux-glibc-amd64 "$@"
-build_target linux-musl-amd64  "$@"
+# --auto: only build what's missing on the release (idempotent).
+build_target linux-glibc-amd64 --auto "$@"
+build_target linux-musl-amd64  --auto "$@"

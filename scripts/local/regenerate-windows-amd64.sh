@@ -22,4 +22,4 @@ cd "$(cd "$(dirname "$0")/../.." && pwd)"
 
 log "==> regenerate-windows-amd64.sh (host=$(uname -s))"
 
-build_target windows-amd64 "$@"
+build_target windows-amd64 --auto "$@"
