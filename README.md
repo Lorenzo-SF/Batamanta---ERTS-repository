@@ -10,6 +10,15 @@ If you want to skip the lengthy Erlang/OTP compilation process and get
 straight to building your Elixir/Erlang applications, you are in the
 right place.
 
+> **⚠️ macOS users**: the build scripts require **bash 4+** (for associative
+> arrays). macOS ships bash 3.2.57 as `/bin/bash`, which is from 2007. Install
+> bash 5 via Homebrew and re-run with the new interpreter:
+> ```bash
+> brew install bash
+> /opt/homebrew/bin/bash ./scripts/local/regenerate-darwin.sh
+> ```
+> The script will refuse to run on bash < 4 and tell you exactly what to do.
+
 ---
 
 ## 🎯 Supported Platforms & Architectures

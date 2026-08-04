@@ -3,6 +3,13 @@
 #  _lib.sh — common helpers for the ERTS builder scripts
 # =============================================================================
 #
+#  REQUIRES BASH 4.0+. macOS ships 3.2.57 as /bin/bash and will explode
+#  with a cryptic "linux-glibc-amd64: unbound variable" the first time we
+#  hit `declare -A`. If you're on macOS:
+#
+#      brew install bash
+#      /opt/homebrew/bin/bash ./scripts/local/regenerate-darwin.sh
+#
 #  This is the single source of truth for everything the per-target wrappers
 #  (`erts-*.sh`) do. Keeping the logic in one bash file means:
 #
@@ -41,6 +48,34 @@
 # =============================================================================
 
 set -euo pipefail
+
+# -----------------------------------------------------------------------------
+#  Bash version check
+# -----------------------------------------------------------------------------
+#  This script uses `declare -A` (associative arrays) and other bash 4+
+#  features. macOS ships bash 3.2.57 as /bin/bash, which is from 2007 and
+#  doesn't support any of it — leading to a baffling
+#
+#      "linux-glibc-amd64: unbound variable"
+#
+#  the first time we hit a `declare -A` line.
+#
+#  Fix: install bash 5 (one line) and re-run with that interpreter:
+#
+#      brew install bash
+#      /opt/homebrew/bin/bash ./scripts/local/regenerate-darwin.sh
+#      # or add /opt/homebrew/bin/bash to your PATH
+#
+#  We refuse to run on bash < 4 to give a clear error instead of a cryptic
+#  one four hundred lines later.
+if ((BASH_VERSINFO[0] < 4)); then
+  echo "[batamanta-erts] ERROR: this script requires bash 4.0 or later." >&2
+  echo "[batamanta-erts] Detected: bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} (likely macOS /bin/bash)." >&2
+  echo "[batamanta-erts] Install bash 5 and re-run:" >&2
+  echo "[batamanta-erts]   brew install bash" >&2
+  echo "[batamanta-erts]   /opt/homebrew/bin/bash \$0 \$@" >&2
+  exit 2
+fi
 
 # -----------------------------------------------------------------------------
 #  Paths
