@@ -21,7 +21,7 @@
 #  A target script looks like:
 #
 #      #!/usr/bin/env bash
-#      set -euo pipefail
+#
 #      . "$(dirname "$0")/_lib.sh"
 #      build_target linux-glibc-amd64
 #
@@ -47,7 +47,7 @@
 #
 # =============================================================================
 
-set -euo pipefail
+
 
 # -----------------------------------------------------------------------------
 #  Bash version check
@@ -779,14 +779,21 @@ sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/sta
 # Strip everything that isn't needed at runtime
 rm -rf lib/*/src lib/*/include lib/*/test lib/*/examples
 rm -f  InstallInfo Install.ini
-# COPYFILE_DISABLE=1: tell BSD tar on macOS to NOT include extended
-# attributes (xattrs), ACLs and resource forks in the archive. Without
-# this, the resulting tarball has macOS-specific metadata that makes
-# its on-disk size differ from what 'gh release upload' computes for
-# the HTTP Content-Length header, and GitHub rejects the upload with
-# a 403 "Bad Content-Length". No-op on Linux (the env var is just
-# ignored by GNU tar).
-COPYFILE_DISABLE=1 tar -czf "$out" .
+# Strip macOS-specific metadata from the archive. Without this, the
+# tarball has xattrs/ACLs/resource forks that make its on-disk size
+# differ from what 'gh release upload' computes for the HTTP
+# Content-Length header, and GitHub rejects the upload with a 403
+# "Bad Content-Length".
+#   * COPYFILE_DISABLE=1               affects 'cp' (and tar in older
+#                                      macOS releases)
+#   * COPY_EXTENDED_ATTRIBUTES_DISABLE=1  newer, only affects xattrs
+#   * --no-xattrs                      works on both BSD and GNU tar
+#   * --no-acls                        BSD tar only; GNU tar ignores
+# We set all three for maximum portability. None of them have any
+# effect on GNU tar (Linux) — they're either unknown env vars or
+# flags it silently accepts.
+COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
+  tar --no-xattrs --no-acls -czf "$out" .
 EOF
   chmod +x "$runner"
 
