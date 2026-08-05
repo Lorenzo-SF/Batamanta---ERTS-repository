@@ -30,28 +30,50 @@ param(
   [string]$Owner = "Lorenzo-SF",
   [string]$Repo = "Batamanta---ERTS-repository",
   [string]$MinVersion = $(if ($env:DETECT_MIN_VERSION) { $env:DETECT_MIN_VERSION } else { "27.0" }),
-  [string]$ManifestPath = "MANIFEST.json",
+  [string]$ManifestPath = "",
   [switch]$NoPush
 )
 
+# Default MANIFEST path: walk up from $PSScriptRoot until we find a .git
+# directory, and write MANIFEST.json there. Falls back to the current
+# working directory if no .git is found in the ancestor chain.
+if (-not $ManifestPath) {
+  if ($PSScriptRoot) {
+    $cur = (Resolve-Path $PSScriptRoot).Path
+    $found = $false
+    for ($i = 0; $i -lt 10; $i++) {
+      if (Test-Path (Join-Path $cur ".git")) { $found = $true; break }
+      $parent = Split-Path $cur -Parent
+      if ($parent -eq $cur) { break }  # reached filesystem root
+      $cur = $parent
+    }
+    if ($found) { $ManifestPath = Join-Path $cur "MANIFEST.json" }
+    else { $ManifestPath = "MANIFEST.json" }
+  } else {
+    $ManifestPath = "MANIFEST.json"
+  }
+}
+
 $ErrorActionPreference = 'Stop'
 
-# Keep in sync with scripts/_lib.sh and the consuming batamanta library.
+# Only the 4 targets that are actually published today:
+#   * linux-glibc-amd64, linux-musl-amd64  (built in Docker, Linux/amd64)
+#   * darwin-arm64                          (built on Mac arm64)
+#   * windows-amd64                         (built on Windows natively)
+# `linux-glibc-arm64`, `linux-musl-arm64` and `darwin-amd64` are intentionally
+# NOT listed — there are no runners for them and the user has decided not to
+# support them. Any release that still has a `arm64-glibc.tar.gz` or
+# `arm64-musl.tar.gz` asset (legacy from before the rename) will simply be
+# ignored here, and cleaned out of the release in a separate step.
 $TARGET_KEYS = @(
   "linux-glibc-amd64",
-  "linux-glibc-arm64",
   "linux-musl-amd64",
-  "linux-musl-arm64",
-  "darwin-amd64",
   "darwin-arm64",
   "windows-amd64"
 )
 $ASSET_EXT_BY_TARGET = @{
   "linux-glibc-amd64" = ".tar.gz"
-  "linux-glibc-arm64" = ".tar.gz"
   "linux-musl-amd64"  = ".tar.gz"
-  "linux-musl-arm64"  = ".tar.gz"
-  "darwin-amd64"       = ".tar.gz"
   "darwin-arm64"       = ".tar.gz"
   "windows-amd64"      = ".zip"
 }
@@ -75,20 +97,13 @@ function VersionAtLeast([string]$v, [string]$floor) {
 }
 
 function DeriveTargetKey([string]$assetName) {
-  # Preferred (new) naming: <target><ext>, e.g. linux-glibc-amd64.tar.gz
+  # New naming only: <target><ext>, e.g. linux-glibc-amd64.tar.gz.
+  # Legacy names like `amd64-glibc.tar.gz` are NOT mapped to anything
+  # here — they are filtered out in the main loop, and cleaned out of
+  # the release assets in a separate step.
   foreach ($tk in $TARGET_KEYS) {
     $ext = $ASSET_EXT_BY_TARGET[$tk]
     if ($assetName -eq "$tk$ext") { return $tk }
-  }
-  # Legacy naming from before the 8-targets rename. Kept as a fallback
-  # so existing releases (with assets like amd64-glibc.tar.gz) are still
-  # recognized. Remove once every release has been re-uploaded with the
-  # new naming.
-  switch -Regex ($assetName) {
-    '^amd64-glibc\.tar\.gz$'  { return 'linux-glibc-amd64' }
-    '^arm64-glibc\.tar\.gz$'  { return 'linux-glibc-arm64' }
-    '^amd64-musl\.tar\.gz$'   { return 'linux-musl-amd64' }
-    '^arm64-musl\.tar\.gz$'   { return 'linux-musl-arm64' }
   }
   return $null
 }
@@ -122,6 +137,7 @@ foreach ($r in $releases) {
   foreach ($a in $r.assets) {
     $tk = DeriveTargetKey $a.name
     if ($null -eq $tk) { $skipped.unknownAsset++; continue }
+    if ($entry.Contains($tk)) { continue }  # safety: only the first match wins
     $entry[$tk] = "https://github.com/$Owner/$Repo/releases/download/$($r.tag_name)/$($a.name)"
   }
   if ($entry.Count -eq 0) { $skipped.noAssets++; continue }

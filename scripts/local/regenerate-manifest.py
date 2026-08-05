@@ -20,8 +20,11 @@
 #    * Drafts / prereleases.
 #    * Tags that don't match the `OTP-X.Y.Z` pattern.
 #    * OTP versions below the `min_version` floor (default 27.0).
-#    * Asset filenames that don't match any of the 7 supported target keys.
-#
+#    * Asset filenames that don't match any of the 4 supported target keys.
+#      Legacy filenames from before the rename (e.g. `amd64-glibc.tar.gz`)
+#      are intentionally ignored — they are cleaned out of the release
+#      assets in a separate step, and the upstream MANIFEST only ever
+#      references the new naming.
 #  After writing MANIFEST.json the script commits + pushes it to the same
 #  branch the user is currently on (typically `main`). Use `--no-push` to
 #  just write the file locally and let you commit yourself.
@@ -55,24 +58,25 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Keep in sync with scripts/_lib.sh and lib/batamanta/target.ex in the
-# consuming `batamanta` library. Order doesn't matter; the set does.
+# Only the 4 targets that are actually published today:
+#   * linux-glibc-amd64, linux-musl-amd64  (built in Docker, Linux/amd64)
+#   * darwin-arm64                          (built on Mac arm64)
+#   * windows-amd64                         (built on Windows natively)
+# `linux-glibc-arm64`, `linux-musl-arm64` and `darwin-amd64` are intentionally
+# NOT listed — there are no runners for them and the user has decided not to
+# support them. Any release that still has a `arm64-glibc.tar.gz` or
+# `arm64-musl.tar.gz` asset (legacy from before the rename) will simply be
+# ignored here, and cleaned out of the release in a separate step.
 TARGET_KEYS = {
     "linux-glibc-amd64",
-    "linux-glibc-arm64",
     "linux-musl-amd64",
-    "linux-musl-arm64",
-    "darwin-amd64",
     "darwin-arm64",
     "windows-amd64",
 }
 
 ASSET_EXT_BY_TARGET = {
     "linux-glibc-amd64": ".tar.gz",
-    "linux-glibc-arm64": ".tar.gz",
-    "linux-musl-amd64": ".tar.gz",
-    "linux-musl-arm64": ".tar.gz",
-    "darwin-amd64":      ".tar.gz",
+    "linux-musl-amd64":  ".tar.gz",
     "darwin-arm64":      ".tar.gz",
     "windows-amd64":     ".zip",
 }
@@ -156,23 +160,13 @@ def version_at_least(v: str, floor: str) -> bool:
 
 def derive_target_key(asset_name: str) -> str | None:
     """Extract the target_key from an asset filename. Returns None if the
-    filename doesn't match any known target+ext pattern."""
-    # Preferred (new) naming: <target><ext>, e.g. linux-glibc-amd64.tar.gz
+    filename doesn't match any known target+ext pattern. New naming only —
+    legacy asset names like `amd64-glibc.tar.gz` are NOT mapped to anything
+    here, they are filtered out in the main loop and cleaned out of the
+    release assets in a separate step."""
     for tk, ext in ASSET_EXT_BY_TARGET.items():
         if asset_name == f"{tk}{ext}":
             return tk
-    # Legacy naming from before the 8-targets rename. Kept as a fallback
-    # so existing releases (with assets like amd64-glibc.tar.gz) are still
-    # recognized. Remove once every release has been re-uploaded with the
-    # new naming.
-    legacy = {
-        "amd64-glibc.tar.gz": "linux-glibc-amd64",
-        "arm64-glibc.tar.gz": "linux-glibc-arm64",
-        "amd64-musl.tar.gz":  "linux-musl-amd64",
-        "arm64-musl.tar.gz":  "linux-musl-arm64",
-    }
-    if asset_name in legacy:
-        return legacy[asset_name]
     return None
 
 
@@ -209,8 +203,13 @@ def build_manifest(repo: str, owner: str, min_version: str) -> dict[str, dict[st
         for a in assets:
             tk = derive_target_key(a["name"])
             if tk is None:
-                # Could be a non-target asset (e.g. checksums, a stray
-                # debug upload). Skip silently.
+                # Could be a non-target asset (e.g. legacy naming from
+                # before the rename, a checksums file, a stray debug
+                # upload). Skip silently.
+                continue
+            if tk in entry:
+                # Defensive: with the new-only naming this can't happen,
+                # but guards against future code drift.
                 continue
             entry[tk] = (
                 f"https://github.com/{owner}/{repo}/releases/download/{tag}/{a['name']}"
@@ -230,6 +229,21 @@ def build_manifest(repo: str, owner: str, min_version: str) -> dict[str, dict[st
 def write_manifest(manifest: dict, path: Path) -> None:
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     log(f"  wrote {path} ({path.stat().st_size} bytes)")
+
+
+def _find_repo_root() -> Path:
+    """Walk up from this script's parent looking for a .git directory.
+    Falls back to the current working directory if no .git is found in the
+    ancestor chain (e.g. running outside a git checkout)."""
+    cur = Path(__file__).resolve().parent
+    for _ in range(10):
+        if (cur / ".git").exists():
+            return cur
+        parent = cur.parent
+        if parent == cur:
+            break  # reached filesystem root
+        cur = parent
+    return Path.cwd()
 
 
 def maybe_commit_and_push(path: Path, do_push: bool) -> None:
@@ -269,8 +283,8 @@ def main() -> int:
                     help="GitHub owner (defaults to the owner part of --repo)")
     ap.add_argument("--min-version", default=os.environ.get("DETECT_MIN_VERSION", "27.0"),
                     help="Only include OTP versions >= this (default: 27.0, or $DETECT_MIN_VERSION)")
-    ap.add_argument("--manifest", default="MANIFEST.json",
-                    help="Path to the manifest file (default: MANIFEST.json)")
+    ap.add_argument("--manifest", default=str(_find_repo_root() / "MANIFEST.json"),
+                    help="Path to the manifest file (default: <repo-root>/MANIFEST.json)")
     ap.add_argument("--no-push", action="store_true",
                     help="Don't push after committing")
     args = ap.parse_args()
