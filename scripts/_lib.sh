@@ -652,6 +652,12 @@ fi
 # need and which inflate the tarball by 30-50%.
 rm -rf lib/*/src  lib/*/include  lib/*/test  lib/*/examples
 rm -f  InstallInfo  Install.ini
+# On Linux (GNU tar) the command below is fine as-is. If this ever runs
+# on macOS (e.g. via a future GH Actions macos-latest target), prefix
+# it with COPYFILE_DISABLE=1 to skip macOS xattrs/ACLs/resource-fork
+# metadata, otherwise the tarball size doesn't match what 'gh release
+# upload' reports as Content-Length and GitHub returns 403
+# "Bad Content-Length". See native_build_macos for the macOS variant.
 tar -czf /dist/$asset -C /opt/erlang/lib/erlang .
 EOF
 
@@ -773,7 +779,14 @@ sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/sta
 # Strip everything that isn't needed at runtime
 rm -rf lib/*/src lib/*/include lib/*/test lib/*/examples
 rm -f  InstallInfo Install.ini
-tar -czf "$out" .
+# COPYFILE_DISABLE=1: tell BSD tar on macOS to NOT include extended
+# attributes (xattrs), ACLs and resource forks in the archive. Without
+# this, the resulting tarball has macOS-specific metadata that makes
+# its on-disk size differ from what 'gh release upload' computes for
+# the HTTP Content-Length header, and GitHub rejects the upload with
+# a 403 "Bad Content-Length". No-op on Linux (the env var is just
+# ignored by GNU tar).
+COPYFILE_DISABLE=1 tar -czf "$out" .
 EOF
   chmod +x "$runner"
 
