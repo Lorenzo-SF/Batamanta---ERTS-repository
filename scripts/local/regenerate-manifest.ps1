@@ -75,9 +75,20 @@ function VersionAtLeast([string]$v, [string]$floor) {
 }
 
 function DeriveTargetKey([string]$assetName) {
+  # Preferred (new) naming: <target><ext>, e.g. linux-glibc-amd64.tar.gz
   foreach ($tk in $TARGET_KEYS) {
     $ext = $ASSET_EXT_BY_TARGET[$tk]
     if ($assetName -eq "$tk$ext") { return $tk }
+  }
+  # Legacy naming from before the 8-targets rename. Kept as a fallback
+  # so existing releases (with assets like amd64-glibc.tar.gz) are still
+  # recognized. Remove once every release has been re-uploaded with the
+  # new naming.
+  switch -Regex ($assetName) {
+    '^amd64-glibc\.tar\.gz$'  { return 'linux-glibc-amd64' }
+    '^arm64-glibc\.tar\.gz$'  { return 'linux-glibc-arm64' }
+    '^amd64-musl\.tar\.gz$'   { return 'linux-musl-amd64' }
+    '^arm64-musl\.tar\.gz$'   { return 'linux-musl-arm64' }
   }
   return $null
 }

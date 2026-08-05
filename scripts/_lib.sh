@@ -359,10 +359,10 @@ declare -A TARGET_DEPS_CMD=(
   [linux-musl-arm64]="apk add --no-cache build-base autoconf ncurses-dev openssl-dev zlib-dev perl bash coreutils zstd"
 )
 declare -A TARGET_ASSET=(
-  [linux-glibc-amd64]="amd64-glibc.tar.gz"
-  [linux-glibc-arm64]="arm64-glibc.tar.gz"
-  [linux-musl-amd64]="amd64-musl.tar.gz"
-  [linux-musl-arm64]="arm64-musl.tar.gz"
+  [linux-glibc-amd64]="linux-glibc-amd64.tar.gz"
+  [linux-glibc-arm64]="linux-glibc-arm64.tar.gz"
+  [linux-musl-amd64]="linux-musl-amd64.tar.gz"
+  [linux-musl-arm64]="linux-musl-arm64.tar.gz"
   [darwin-amd64]="darwin-amd64.tar.gz"
   [darwin-arm64]="darwin-arm64.tar.gz"
   [windows-amd64]="windows-amd64.zip"

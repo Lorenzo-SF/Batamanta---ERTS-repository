@@ -157,9 +157,22 @@ def version_at_least(v: str, floor: str) -> bool:
 def derive_target_key(asset_name: str) -> str | None:
     """Extract the target_key from an asset filename. Returns None if the
     filename doesn't match any known target+ext pattern."""
+    # Preferred (new) naming: <target><ext>, e.g. linux-glibc-amd64.tar.gz
     for tk, ext in ASSET_EXT_BY_TARGET.items():
         if asset_name == f"{tk}{ext}":
             return tk
+    # Legacy naming from before the 8-targets rename. Kept as a fallback
+    # so existing releases (with assets like amd64-glibc.tar.gz) are still
+    # recognized. Remove once every release has been re-uploaded with the
+    # new naming.
+    legacy = {
+        "amd64-glibc.tar.gz": "linux-glibc-amd64",
+        "arm64-glibc.tar.gz": "linux-glibc-arm64",
+        "amd64-musl.tar.gz":  "linux-musl-amd64",
+        "arm64-musl.tar.gz":  "linux-musl-arm64",
+    }
+    if asset_name in legacy:
+        return legacy[asset_name]
     return None
 
 
