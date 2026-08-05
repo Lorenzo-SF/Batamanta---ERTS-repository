@@ -46,7 +46,7 @@
 #  sure MANIFEST.json lists the new assets.
 # =============================================================================
 
-set -euo pipefail
+
 cd "$(cd "$(dirname "$0")/../.." && pwd)"
 
 . ./scripts/_lib.sh

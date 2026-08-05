@@ -9,7 +9,7 @@
 # This is a thin wrapper around _lib.sh::build_target â€” all the actual logic
 # lives there.
 
-set -euo pipefail
+
 cd "$(dirname "$0")"
 . ./_lib.sh
 

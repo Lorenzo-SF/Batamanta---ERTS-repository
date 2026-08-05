@@ -12,7 +12,7 @@
 #   ./erts-darwin-amd64.sh
 #   ./erts-darwin-amd64.sh 28.4 28.4.2
 
-set -euo pipefail
+
 cd "$(dirname "$0")"
 . ./_lib.sh
 

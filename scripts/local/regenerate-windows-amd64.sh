@@ -15,7 +15,7 @@
 #  Usage: same flags as regenerate-linux-amd64.sh
 # =============================================================================
 
-set -euo pipefail
+
 cd "$(cd "$(dirname "$0")/../.." && pwd)"
 
 . ./scripts/_lib.sh

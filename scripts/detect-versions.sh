@@ -18,7 +18,7 @@
 #  to skip the build step entirely.
 # =============================================================================
 
-set -euo pipefail
+
 cd "$(dirname "$0")"
 . ./_lib.sh
 
