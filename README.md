@@ -23,7 +23,7 @@ right place.
 
 ## 🎯 Supported Platforms & Architectures
 
-We provide pre-compiled binaries for the following **7 targets**:
+We provide pre-compiled binaries for the following **6 targets**:
 
 | Target | OS | Arch | How it's built |
 |---|---|---|---|
@@ -31,7 +31,6 @@ We provide pre-compiled binaries for the following **7 targets**:
 | `linux-glibc-arm64` | Linux | aarch64 | Compiled from source in `ubuntu:22.04` Docker |
 | `linux-musl-amd64`  | Linux | x86_64 | Compiled from source in `alpine:3.19` Docker |
 | `linux-musl-arm64`  | Linux | aarch64 | Compiled from source in `alpine:3.19` Docker |
-| `darwin-amd64`      | macOS | x86_64 | Compiled natively on Mac (Intel or Rosetta) |
 | `darwin-arm64`      | macOS | aarch64 | Compiled natively on Apple Silicon |
 | `windows-amd64`     | Windows | x86_64 | Re-packaged from the official `erlang/otp` prebuilt zip |
 
@@ -66,7 +65,6 @@ scripts/erts-linux-glibc-amd64.sh  ┐
 scripts/erts-linux-glibc-arm64.sh  │
 scripts/erts-linux-musl-amd64.sh   ├─ thin wrappers, each ~3 lines,
 scripts/erts-linux-musl-arm64.sh   │  just `build_target <target>`
-scripts/erts-darwin-amd64.sh       │
 scripts/erts-darwin-arm64.sh       │
 scripts/erts-windows-amd64.sh      ┘
 scripts/detect-versions.sh         ← queries erlang/otp API, prints missing versions
@@ -87,10 +85,17 @@ runtime.
 
 ## 🛠️ Building locally
 
-The CI handles the 4 Linux targets automatically. For the other 3
-(Windows amd64 + the two macOS variants), use the scripts in
-`scripts/local/`. See [scripts/local/README.md](scripts/local/README.md)
-for full details.
+The CI handles the 4 Linux targets automatically. For the other 2
+(Windows amd64 + macOS arm64), use the scripts in `scripts/local/`.
+See [scripts/local/README.md](scripts/local/README.md) for full details.
+
+> **Note on macOS amd64 (Intel):** the build scripts (`scripts/erts-darwin-amd64.sh`,
+> `regenerate-darwin.sh` with `DARWIN_ARCH=amd64`) and the
+> `darwin-amd64` target entry in `_lib.sh` are kept in the repo for
+> future reactivation, but no releases are currently published for
+> this target — it requires a Mac with an Intel CPU (or Apple Silicon
+> running Rosetta, which is significantly slower) and is not part of
+> the supported matrix. Add a release tag to your fork if you build it.
 
 Quick examples:
 
@@ -103,9 +108,6 @@ Quick examples:
 
 # macOS arm64 (your Apple Silicon Mac)
 ./scripts/local/regenerate-darwin.sh 28.4.2
-
-# macOS amd64 (Intel Mac, or Apple Silicon via Rosetta — slower)
-DARWIN_ARCH=amd64 ./scripts/local/regenerate-darwin.sh 28.4.2
 ```
 
 After running any of these, sync the manifest:
@@ -144,7 +146,7 @@ Useful environment variables:
 * **Manually** via the Actions tab — pick a specific version and/or a
   subset of targets from the `workflow_dispatch` inputs.
 
-The matrix covers the **4 Linux targets** (the 3 that need macOS or
+The matrix covers the **4 Linux targets** (the 2 that need macOS or
 Windows runners are not in the free matrix — see
 `scripts/local/README.md` for the manual workflow).
 
@@ -153,7 +155,7 @@ Available `workflow_dispatch` inputs:
 | Input                  | Default                                                  | Effect                                                                |
 |------------------------|----------------------------------------------------------|-----------------------------------------------------------------------|
 | `version`              | (empty — auto-detect)                                    | Build a single OTP version, e.g. `28.4.2`                             |
-| `targets`              | `linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64` | Space- or comma-separated subset of the 7 supported targets |
+| `targets`              | `linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64` | Space- or comma-separated subset of the 6 supported targets |
 | `regenerate_from_zero` | `false`                                                  | Delete every release and `MANIFEST.json`, then rebuild from scratch   |
 | `min_version`          | `27.0`                                                   | Only build OTP versions ≥ this                                        |
 
