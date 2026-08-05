@@ -69,12 +69,17 @@ set -euo pipefail
 #  We refuse to run on bash < 4 to give a clear error instead of a cryptic
 #  one four hundred lines later.
 if ((BASH_VERSINFO[0] < 4)); then
-  echo "[batamanta-erts] ERROR: this script requires bash 4.0 or later." >&2
-  echo "[batamanta-erts] Detected: bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} (likely macOS /bin/bash)." >&2
-  echo "[batamanta-erts] Install bash 5 and re-run:" >&2
-  echo "[batamanta-erts]   brew install bash" >&2
-  echo "[batamanta-erts]   /opt/homebrew/bin/bash \$0 \$@" >&2
-  exit 2
+  # Warning, not error: the user might have a workaround (like running with
+  # bash 5 explicitly, or having patched around the assoc array uses). We
+  # let them try, but the script will likely fail in confusing ways below.
+  # The `declare -A` lines will error on bash 3.2 with a cryptic "unbound
+  # variable" message.
+  echo "[batamanta-erts] WARNING: bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} detected (need 4+)." >&2
+  echo "[batamanta-erts] WARNING: this script uses 'declare -A' (associative arrays) which requires bash 4+." >&2
+  echo "[batamanta-erts] WARNING: install bash 5 and re-run with that interpreter:" >&2
+  echo "[batamanta-erts] WARNING:   brew install bash" >&2
+  echo "[batamanta-erts] WARNING:   /opt/homebrew/bin/bash \$0 \$@" >&2
+  echo "[batamanta-erts] WARNING: continuing anyway — expect strange failures." >&2
 fi
 
 # -----------------------------------------------------------------------------
