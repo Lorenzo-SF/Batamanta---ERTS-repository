@@ -56,24 +56,25 @@ if (-not $ManifestPath) {
 
 $ErrorActionPreference = 'Stop'
 
-# Only the 4 targets that are actually published today:
-#   * linux-glibc-amd64, linux-musl-amd64  (built in Docker, Linux/amd64)
-#   * darwin-arm64                          (built on Mac arm64)
-#   * windows-amd64                         (built on Windows natively)
-# `linux-glibc-arm64`, `linux-musl-arm64` and `darwin-amd64` are intentionally
-# NOT listed — there are no runners for them and the user has decided not to
-# support them. Any release that still has a `arm64-glibc.tar.gz` or
-# `arm64-musl.tar.gz` asset (legacy from before the rename) will simply be
-# ignored here, and cleaned out of the release in a separate step.
+# The 6 targets that are supported by `scripts/_lib.sh` and listed in the
+# README. Today only 4 of them have actual published assets (the 2 linux-arm64
+# are still pending the first CI run that builds them); the script is fine
+# with that — it just generates entries for whatever the releases actually
+# have. Anything else (legacy naming like `amd64-glibc.tar.gz`, stray assets,
+# macos-amd64) is silently dropped.
 $TARGET_KEYS = @(
   "linux-glibc-amd64",
+  "linux-glibc-arm64",
   "linux-musl-amd64",
+  "linux-musl-arm64",
   "darwin-arm64",
   "windows-amd64"
 )
 $ASSET_EXT_BY_TARGET = @{
   "linux-glibc-amd64" = ".tar.gz"
+  "linux-glibc-arm64" = ".tar.gz"
   "linux-musl-amd64"  = ".tar.gz"
+  "linux-musl-arm64"  = ".tar.gz"
   "darwin-arm64"       = ".tar.gz"
   "windows-amd64"      = ".zip"
 }
