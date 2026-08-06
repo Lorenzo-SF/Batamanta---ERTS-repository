@@ -3,13 +3,16 @@
 #
 # IMPORTANT: this script is meant to be run on a real macOS host with
 # Homebrew and Xcode CLT installed. From any other host (Linux, Windows)
-# you'll need a macOS runner â€” see ../.github/workflows/erts.yml for the
+# you'll need a macOS runner â€" see ../.github/workflows/erts.yml for the
 # GitHub Actions matrix that does this.
 #
 # Usage:
 #   ./erts-darwin-arm64.sh
 #   ./erts-darwin-arm64.sh 28.4 28.4.2
 
+# Refuse to run on bash < 5 (macOS still ships 3.2 as /bin/bash). Sourced
+# as the very first thing after the shebang so the failure is immediate.
+. "$(dirname "${BASH_SOURCE[0]}")/_bash_guard.sh"
 
 cd "$(dirname "$0")"
 . ./_lib.sh

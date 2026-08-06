@@ -9,6 +9,9 @@
 # This is a thin wrapper around _lib.sh::build_target â€” all the actual logic
 # lives there.
 
+# Refuse to run on bash < 5 (macOS still ships 3.2 as /bin/bash). Sourced
+# as the very first thing after the shebang so the failure is immediate.
+. "$(dirname "${BASH_SOURCE[0]}")/_bash_guard.sh"
 
 cd "$(dirname "$0")"
 . ./_lib.sh

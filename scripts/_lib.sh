@@ -47,40 +47,29 @@
 #
 # =============================================================================
 
+# Refuse to run on bash < 5. Every entry-point script (erts-*.sh,
+# scripts/local/*.sh) sources _bash_guard.sh as the first line, but
+# _lib.sh is sometimes sourced directly from a one-off shell too, so
+# we duplicate the guard here. Sourcing twice is a no-op because the
+# guard's `BASH_SOURCE[0]` check is unique per file.
+. "$(dirname "${BASH_SOURCE[0]}")/_bash_guard.sh"
 
 
 # -----------------------------------------------------------------------------
 #  Bash version check
 # -----------------------------------------------------------------------------
-#  This script uses `declare -A` (associative arrays) and other bash 4+
-#  features. macOS ships bash 3.2.57 as /bin/bash, which is from 2007 and
-#  doesn't support any of it — leading to a baffling
+#  Bash 5+ is REQUIRED. This is enforced upstream by _bash_guard.sh, which
+#  every entry-point script sources as the very first thing after the
+#  shebang. If we got here, the interpreter is already 5+. The check used
+#  to live inline (as a warning, not an error) but it was bypassed in
+#  practice because macOS still ships /bin/bash = 3.2.57 (from 2007) and
+#  the warning didn't stop anything. The guard now exits 1 immediately
+#  with a fix recipe, before any `declare -A` line can be reached.
 #
-#      "linux-glibc-amd64: unbound variable"
-#
-#  the first time we hit a `declare -A` line.
-#
-#  Fix: install bash 5 (one line) and re-run with that interpreter:
-#
-#      brew install bash
-#      /opt/homebrew/bin/bash ./scripts/local/regenerate-darwin.sh
-#      # or add /opt/homebrew/bin/bash to your PATH
-#
-#  We refuse to run on bash < 4 to give a clear error instead of a cryptic
-#  one four hundred lines later.
-if ((BASH_VERSINFO[0] < 4)); then
-  # Warning, not error: the user might have a workaround (like running with
-  # bash 5 explicitly, or having patched around the assoc array uses). We
-  # let them try, but the script will likely fail in confusing ways below.
-  # The `declare -A` lines will error on bash 3.2 with a cryptic "unbound
-  # variable" message.
-  echo "[batamanta-erts] WARNING: bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} detected (need 4+)." >&2
-  echo "[batamanta-erts] WARNING: this script uses 'declare -A' (associative arrays) which requires bash 4+." >&2
-  echo "[batamanta-erts] WARNING: install bash 5 and re-run with that interpreter:" >&2
-  echo "[batamanta-erts] WARNING:   brew install bash" >&2
-  echo "[batamanta-erts] WARNING:   /opt/homebrew/bin/bash \$0 \$@" >&2
-  echo "[batamanta-erts] WARNING: continuing anyway — expect strange failures." >&2
-fi
+#  If you're adding a NEW entry-point script under scripts/ or
+#  scripts/local/, make sure it sources _bash_guard.sh as the first line
+#  after the shebang. See scripts/erts-linux-glibc-amd64.sh for the
+#  canonical pattern.
 
 # -----------------------------------------------------------------------------
 #  Paths

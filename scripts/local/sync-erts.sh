@@ -35,6 +35,10 @@
 #   ./scripts/local/sync-erts.sh --version=28.4.2 linux-glibc-amd64  # one (version, target)
 #   ./scripts/local/sync-erts.sh regenerate-from-zero  # DESTRUCTIVE
 
+# Refuse to run on bash < 5 (macOS still ships 3.2 as /bin/bash). Sourced
+# as the very first thing after the shebang so the failure is immediate.
+. "$(dirname "${BASH_SOURCE[0]}")/../_bash_guard.sh"
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

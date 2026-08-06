@@ -4,6 +4,10 @@
 #
 # This file is sourced from sync-erts.sh. Do not run it directly.
 
+# Refuse to run on bash < 5 (macOS still ships 3.2 as /bin/bash). Sourced
+# as the very first thing after the shebang so the failure is immediate.
+. "$(dirname "${BASH_SOURCE[0]}")/../_bash_guard.sh"
+
 REPO="${REPO:-Lorenzo-SF/Batamanta---ERTS-repository}"
 MIN_OTP_VERSION="${MIN_OTP_VERSION:-27.0}"
 # Set by sync-erts.sh to honour the --no-build / --no-upload flags.
