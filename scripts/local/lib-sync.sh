@@ -6,11 +6,15 @@
 
 REPO="${REPO:-Lorenzo-SF/Batamanta---ERTS-repository}"
 MIN_OTP_VERSION="${MIN_OTP_VERSION:-27.0}"
-# Set by sync-erts.sh to honour the --no-build flag. When 0, sync_target /
-# sync_target_version will only upload assets that already exist locally
-# (they will NOT trigger a build). Defaults to 1 so that calling these
-# functions directly (e.g. from a one-off script) still builds.
+# Set by sync-erts.sh to honour the --no-build / --no-upload flags.
+#   SYNC_BUILD  = 0  -> only upload assets that already exist locally
+#                        (don't trigger a native build for missing files)
+#   SYNC_UPLOAD = 0  -> build + keep the file in dist/, but don't push
+#                        to the GitHub release (useful when build host
+#                        is different from upload host)
+# Defaults to 1/1 so calling these functions directly still does both.
 SYNC_BUILD="${SYNC_BUILD:-1}"
+SYNC_UPLOAD="${SYNC_UPLOAD:-1}"
 
 # ── Targets ──────────────────────────────────────────────────────────────
 # Three parallel arrays, indexed the same way. The i-th entry is the
@@ -312,6 +316,10 @@ sync_target() {
         continue
       }
     fi
+    if (( SYNC_UPLOAD == 0 )); then
+      ok "  $target $version: local file present, --no-upload is set; skipping upload"
+      continue
+    fi
     upload_asset "$target" "$version" || err "  upload failed for $tag"
   done < <(list_missing_for "$target")
 }
@@ -362,6 +370,12 @@ sync_target_version() {
     return 1
   }
 }
+
+# (sync_target_version above does NOT honour --no-upload on purpose:
+# the CI matrix cell that calls it is responsible for both build and
+# upload of its (target, version) pair, so we'd never want to skip the
+# upload there. If you need "build only" semantics for one specific
+# version, use the per-target script directly: erts-<target>.sh <v>.)
 
 # ── Generate MANIFEST.json from the live release set ────────────────────
 # Walks every local release, lists its assets, and writes a manifest keyed

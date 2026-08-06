@@ -66,6 +66,11 @@ Targets (any combination, in any order; default = all six):
 Options:
   --no-build        Don't build any assets; only upload what's already in dist/.
                     Useful when a build was done on a different host.
+  --no-upload       Build any missing assets but don't push them to GitHub.
+                    Useful when the build host is different from the upload
+                    host — you build on Linux/Mac/Windows, scp the dist/
+                    tree to the upload host, then run with --no-build to
+                    just push.
   --manifest-only   Only rewrite MANIFEST.json; skip release sync and asset sync.
   --no-manifest     Don't rewrite MANIFEST.json; only do release + asset sync.
   --releases-only   Only sync releases; skip asset sync and manifest.
@@ -88,6 +93,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --no-build) DO_BUILD=0; SYNC_BUILD=0; shift ;;
+    --no-upload) DO_BUILD=1; SYNC_BUILD=1; SYNC_UPLOAD=0; shift ;;
     --manifest-only) DO_TARGET_SYNC=0; DO_RELEASE_SYNC=0; DO_MANIFEST=1; shift ;;
     --no-manifest) DO_MANIFEST=0; shift ;;
     --releases-only) DO_TARGET_SYNC=0; DO_MANIFEST=0; DO_RELEASE_SYNC=1; shift ;;
