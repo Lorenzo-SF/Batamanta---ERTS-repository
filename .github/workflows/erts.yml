@@ -24,13 +24,11 @@ on:
         description: "Space-separated list of targets to build. Commas also work. Leave empty for the CI default (the 4 linux targets)."
         required: false
         type: string
-        # CI default: the 4 Linux targets. The other 3 (darwin-amd64,
-        # darwin-arm64, windows-amd64) are intentionally NOT in the CI
-        # matrix because they require macos/windows runners (paid plan
-        # or self-hosted). They are built manually with the scripts in
-        # `scripts/local/` (regenerate-darwin.sh, regenerate-windows-amd64.sh,
-        # regenerate-linux-amd64.sh). Override this with any subset of
-        # the 7 supported targets — see scripts/_lib.sh for the full list.
+        # CI default: the 4 Linux targets. The other 2 (darwin-arm64,
+        # windows-amd64) are intentionally NOT in the CI matrix because
+        # they require macos/windows runners (paid plan or self-hosted).
+        # They are built manually with sync-erts.sh on the corresponding
+        # host. Override this with any subset of the 6 supported targets.
         default: "linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64"
       regenerate_from_zero:
         description: "Delete every existing release and MANIFEST entry, then rebuild from scratch. DANGEROUS."
@@ -38,7 +36,7 @@ on:
         type: boolean
         default: false
       min_version:
-        description: "Only build OTP versions >= this. Default 27.0 (we don't ship legacy ERTS for older OtP)."
+        description: "Only build OTP versions >= this. Default 27.0 (we don't ship legacy ERTS for older OTP)."
         required: false
         type: string
         default: "27.0"
@@ -77,11 +75,12 @@ jobs:
             bash -n "$f"
           done
 
-      - name: jq on every local script
+      - name: validate parse-release-assets.escript parses JSON
         if: always()
         run: |
           set -e
           python3 -c "import ast; [ast.parse(open(f, encoding='utf-8').read()) for f in __import__('glob').glob('scripts/local/*.py')]; print('py OK')"
+          test -f scripts/local/parse-release-assets.escript
 
       - name: jq on MANIFEST.json
         run: |
@@ -90,18 +89,52 @@ jobs:
           jq -e 'type == "object"' MANIFEST.json >/dev/null
 
   # -------------------------------------------------------------------------
-  #  detect — list the (version, target) pairs that are missing. Only runs
-  #  on schedule / manual / push to main, not on PRs.
+  #  sync-releases — run sync-erts.sh --releases-only to ensure every stable
+  #  OTP version >= min_version has an (empty) release in the repo. Runs
+  #  ONCE on ubuntu, before the per-(target,version) build matrix.
   # -------------------------------------------------------------------------
-  detect:
-    name: Detect missing versions
+  sync-releases:
+    name: Sync releases
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # The `matrix` output is consumed by the `build` job via
-    # `needs.detect.outputs.matrix`. GHA requires the output to be
-    # declared here even when the writer (the `detect` step) uses the
-    # `>> $GITHUB_OUTPUT` form — otherwise the value is invisible to
-    # downstream jobs.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gh + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh
+
+      - name: sync-erts.sh --releases-only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIN_OTP_VERSION: ${{ inputs.min_version }}
+        run: |
+          chmod +x ./scripts/local/*.sh
+          ./scripts/local/sync-erts.sh --releases-only
+
+      - name: Handle regenerate_from_zero
+        if: ${{ inputs.regenerate_from_zero == true }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "regenerate_from_zero=true — wiping the whole repo..."
+          ./scripts/local/sync-erts.sh regenerate-from-zero
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add MANIFEST.json
+          git commit -m "chore(erts): wipe MANIFEST.json for regenerate_from_zero" || true
+          git push || true
+
+  # -------------------------------------------------------------------------
+  #  build — one job per (target, version) pair. The matrix is computed by
+  #  the `detect` job from the live release set + the requested targets.
+  # -------------------------------------------------------------------------
+  detect:
+    name: Detect missing (target, version) pairs
+    if: github.event_name != 'pull_request'
+    needs: sync-releases
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.detect.outputs.matrix }}
     steps:
@@ -112,62 +145,48 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq gh
 
-      - name: Make scripts executable
-        run: chmod +x ./scripts/*.sh ./scripts/deprecated/*.fish
-
-      - name: Handle regenerate_from_zero
-        id: reset
-        if: ${{ inputs.regenerate_from_zero == true }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "regenerate_from_zero=true — deleting every release and wiping MANIFEST.json"
-          for tag in $(gh release list --json tagName -q '.[].tagName'); do
-            echo "  deleting release $tag"
-            gh release delete "$tag" --yes --cleanup-tag || true
-          done
-          echo '{}' > MANIFEST.json
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add MANIFEST.json
-          git commit -m "chore(erts): wipe MANIFEST.json for regenerate_from_zero" || true
-          git push || true
-
-      - name: Detect missing versions
+      - name: Build the (version, target) matrix
         id: detect
         env:
-          DETECT_MIN_VERSION: ${{ inputs.min_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIN_OTP_VERSION: ${{ inputs.min_version }}
         run: |
-          set +e  # don't auto-abort on the first non-zero exit; we want to
-                 # surface every error before committing an output.
+          set +e
+          # If the user pinned a specific version, use it. Otherwise pull
+          # the list from the live repo (sync-erts.sh --releases-only has
+          # already created any missing empty releases in the prior job).
           if [[ -n "${{ inputs.version }}" ]]; then
             versions="${{ inputs.version }}"
-            echo "manual override: $versions"
           else
-            versions="$(./scripts/detect-versions.sh stable | tr '\n' ' ')"
+            # Ask the repo (via sync-erts.sh's list helper) for every
+            # stable OTP version we have a release for.
+            versions="$(./scripts/local/sync-erts.sh --releases-only --help >/dev/null 2>&1; \
+              gh release list --repo Lorenzo-SF/Batamanta---ERTS-repository --limit 200 --json tagName \
+                | jq -r '.[].tagName' \
+                | sed 's/^OTP-//' \
+                | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+                | sort -V \
+              )"
             if [[ -z "$versions" ]]; then
-              echo "no new versions found"
+              echo "no versions found"
               echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "missing versions (min_version=${{ inputs.min_version }}): $versions"
           fi
+
           if [[ -n "${{ inputs.targets }}" ]]; then
             targets_filter="${{ inputs.targets }}"
           else
             targets_filter="linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64"
           fi
-          # Accept both space- and comma-separated lists for ergonomics.
-          # The for-loop below uses whitespace as the separator.
           targets_filter="${targets_filter//,/ }"
-          # Build the matrix. We assemble the (version, target, runner)
-          # triples with a bash loop and use jq only for the simple JSON
-          # wrapping at the end. The previous iteration used jq's
-          # multi-line program form which produced an empty result
-          # because of how the YAML → bash interpolation handled newlines.
+
           matrix_items=""
           for v in $versions; do
             [[ -z "$v" ]] && continue
+            # Skip versions below MIN_OTP_VERSION (only matters if
+            # `inputs.version` is set; the list helper already filters
+            # via list_erlang_versions when called from sync-erts.sh).
             for t in $targets_filter; do
               [[ -z "$t" ]] && continue
               case "$t" in
@@ -186,18 +205,16 @@ jobs:
             done
           done
           matrix="$(jq -nc --argjson items "[$matrix_items]" '{include: $items}')"
-          # GitHub Actions job outputs are single-line. Using `jq -c`
-          # (compact) avoids the embedded newlines that pretty-printed
-          # JSON would produce — those newlines would truncate the
-          # output at the first newline and `fromJson` on the consumer
-          # side would choke.
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
 
   # -------------------------------------------------------------------------
-  #  build — one job per (target, version) pair. Each runs the appropriate
-  #  script in `scripts/`.
+  #  build — one job per (target, version) pair. Each runs sync-erts.sh
+  #  --version=V --no-manifest <target> on the appropriate runner (linux,
+  #  mac, windows). The script handles: skip-if-already-uploaded, build
+  #  the asset natively, upload it. --no-manifest skips the per-cell
+  #  manifest regen; the `manifest-commit` job does that once at the end.
   # -------------------------------------------------------------------------
   build:
     name: Build ${{ matrix.target }} / OTP ${{ matrix.version }}
@@ -207,10 +224,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
-      # Maximum number of jobs to run concurrently. Without this, GitHub
-      # tries to run all (target × version) jobs at once and the runner
-      # pool is exhausted for free-tier repos. 20 is the documented max
-      # for ubuntu-latest on public repos.
       max-parallel: 20
     steps:
       - uses: actions/checkout@v4
@@ -221,23 +234,30 @@ jobs:
           sudo rm -rf /usr/local/lib/android /opt/ghc 2>/dev/null || true
           sudo apt-get clean
 
-      - name: Install gh, jq, docker
+      - name: Install gh, jq
+        if: matrix.runner == 'ubuntu-latest' || matrix.runner == 'macos-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq gh
+          if [[ "${{ matrix.runner }}" == "macos-latest" ]]; then
+            brew install jq gh
+          else
+            sudo apt-get update
+            sudo apt-get install -y jq gh
+          fi
 
-      - name: Run ${{ matrix.target }} build
+      - name: Run ${{ matrix.target }} build via sync-erts.sh
         env:
-          BATAMANTA_DRY_RUN: "0"
-          # Both names point at the same secret. BATAMANTA_GITHUB_TOKEN is
-          # read by the bash scripts (curl + gh_auth_header); GH_TOKEN is
-          # read by the `gh` CLI itself for `gh release create`/`gh release
-          # upload`. Setting both keeps the runtime and the CLI happy.
+          # sync-erts.sh reads GH_TOKEN (for `gh` itself) and
+          # BATAMANTA_GITHUB_TOKEN (for the per-target build scripts
+          # that use curl with the auth header). Set both.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BATAMANTA_DRY_RUN: "0"
         run: |
-          chmod +x ./scripts/*.sh ./scripts/local/*.sh 2>/dev/null || true
-          ./scripts/erts-${{ matrix.target }}.sh ${{ matrix.version }}
+          chmod +x ./scripts/local/*.sh 2>/dev/null || true
+          ./scripts/local/sync-erts.sh \
+            --version=${{ matrix.version }} \
+            --no-manifest \
+            ${{ matrix.target }}
 
       - name: Upload tarball as artifact (debug aid)
         if: always()
@@ -251,8 +271,8 @@ jobs:
           retention-days: 3
 
   # -------------------------------------------------------------------------
-  #  manifest-commit — push the updated MANIFEST.json back to main once all
-  #  builds finish. Single job, no matrix.
+  #  manifest-commit — runs sync-erts.sh --manifest-only once all builds
+  #  finish, then commits + pushes the new MANIFEST.json back to main.
   # -------------------------------------------------------------------------
   manifest-commit:
     name: Commit MANIFEST.json
@@ -264,6 +284,18 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+
+      - name: Install gh + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh
+
+      - name: Regenerate MANIFEST.json via sync-erts.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./scripts/local/*.sh
+          ./scripts/local/sync-erts.sh --manifest-only
 
       - name: Commit & push any manifest changes
         run: |
