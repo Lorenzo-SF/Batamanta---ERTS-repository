@@ -819,6 +819,7 @@ process_windows_zip() {
   local v="$1" out="$2"
   local tmp_zip="$SRC_TEMP/otp_win64_$v.zip"
   local work="$SRC_TEMP/win_$v"
+  local escript="$REPO_ROOT/scripts/local/build_windows_zip.escript"
 
   download_precompiled "$v" "$tmp_zip"
   rm -rf "$work"
@@ -826,7 +827,8 @@ process_windows_zip() {
   run unzip -q "$tmp_zip" -d "$work"
 
   # The upstream zip is laid out as `otp_win64_<v>/` inside the archive.
-  # Inside that, files are at the root. We strip the bloat and repack.
+  # Inside that, files are at the root. The escript handles the bloat
+  # strip (doc/, usr/, erts-*/doc/, install metadata) and repacks.
   local root
   root="$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1)"
   if [[ -z "$root" ]]; then
@@ -834,19 +836,25 @@ process_windows_zip() {
     return 1
   fi
 
-  pushd "$root" >/dev/null
-  # Same clean-up as the Linux/macOS builds: drop src/include/test/examples
-  # and the install metadata that has no runtime value.
-  find . -type d \( -name src -o -name include -o -name test -o -name examples \) \
-    -exec rm -rf {} + 2>/dev/null || true
-  rm -f  InstallInfo Install.ini Uninstall.exe setup.exe 2>/dev/null || true
-  # Upstream Windows zip ships an `erts-X.Y.Z/doc/` directory with HTML
-  # docs that we don't need at runtime. ~30MB saved per tarball.
-  find . -type d -path '*/erts-*/doc' -exec rm -rf {} + 2>/dev/null || true
-  # Repack. Use zip so the output is a real .zip (Windows users can open it
-  # natively).
-  run zip -qr "$out" .
-  popd >/dev/null
+  # Use the portable Erlang escript when available, since it's a single
+  # binary dependency (:zip lives in stdlib). Fall back to the system
+  # `zip` only if the escript is missing (e.g. someone deleted it from
+  # scripts/local/).
+  if [[ -f "$escript" ]] && command -v escript >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$out")"
+    run escript "$escript" "$root" "$out"
+  else
+    # Legacy path: shell out to system `zip`. Works on macOS, most
+    # Linux distros, and on Windows when Git for Windows' zip is on PATH
+    # (it usually isn't — that's why we prefer the escript).
+    pushd "$root" >/dev/null
+    find . -type d \( -name src -o -name include -o -name test -o -name examples \) \
+      -exec rm -rf {} + 2>/dev/null || true
+    rm -f  InstallInfo Install.ini Uninstall.exe setup.exe 2>/dev/null || true
+    find . -type d -path '*/erts-*/doc' -exec rm -rf {} + 2>/dev/null || true
+    run zip -qr "$out" .
+    popd >/dev/null
+  fi
 }
 
 # -----------------------------------------------------------------------------
