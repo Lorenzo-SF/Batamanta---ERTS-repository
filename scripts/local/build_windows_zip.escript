@@ -19,10 +19,15 @@
 
 main([SrcDir, OutZip]) ->
     %% Strip bloat we don't need at runtime:
-    %%   - `doc/` and `usr/` (Qt/GTK docs, ~30-40MB)
+    %%   - `doc/` (HTML docs, ~110MB)
     %%   - INSTALL.txt, installer.sha256, vc_redist.exe
     %%   - per-erts `doc/` subdirs (HTML docs)
-    BloatTop = ["doc", "usr", "INSTALL.txt", "installer.sha256", "vc_redist.exe"],
+    %%
+    %% NOTE: `usr/` is KEPT entirely. It contains only `usr/include/`
+    %% (erl_nif.h, erl_driver.h, ei.h, ...) and `usr/lib/` (static .lib
+    %% files) — both are REQUIRED to compile and link NIFs from hex deps
+    %% (rustler, tree_sitter, ...) during `mix release`.
+    BloatTop = ["doc", "INSTALL.txt", "installer.sha256", "vc_redist.exe"],
     lists:foreach(fun(Name) ->
         Path = filename:join(SrcDir, Name),
         case file:read_file_info(Path) of

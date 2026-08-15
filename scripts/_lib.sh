@@ -639,7 +639,11 @@ fi
 # Strip everything that isn't needed at runtime. This is the "clean" variant
 # — the upstream builds ship src/, include/, test/, examples/ which we don't
 # need and which inflate the tarball by 30-50%.
-rm -rf lib/*/src  lib/*/include  lib/*/test  lib/*/examples
+# NOTE: lib/*/include is KEPT. Hex deps compile .erl files with
+# `-include_lib("app/include/*.hrl")` (e.g. mint's mint_shims.erl uses
+# `public_key/include/public_key.hrl`), and batamanta compiles the release
+# with this ERTS as ROOTDIR — without the .hrl files that compilation fails.
+rm -rf lib/*/src  lib/*/test  lib/*/examples
 rm -f  InstallInfo  Install.ini
 # On Linux (GNU tar) the command below is fine as-is. If this ever runs
 # on macOS (e.g. via a future GH Actions macos-latest target), prefix
@@ -766,7 +770,9 @@ cd "$build_dir/opt_erlang/lib/erlang"
 sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/erl
 sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/start
 # Strip everything that isn't needed at runtime
-rm -rf lib/*/src lib/*/include lib/*/test lib/*/examples
+# NOTE: lib/*/include is KEPT — hex deps compile .erl files with
+# `-include_lib("app/include/*.hrl")` against this ERTS as ROOTDIR.
+rm -rf lib/*/src lib/*/test lib/*/examples
 rm -f  InstallInfo Install.ini
 # Strip macOS-specific metadata from the archive. Without this, the
 # tarball has xattrs/ACLs/resource forks that make its on-disk size
@@ -836,8 +842,10 @@ process_windows_zip() {
     # Legacy path: shell out to system `zip`. Works on macOS, most
     # Linux distros, and on Windows when Git for Windows' zip is on PATH
     # (it usually isn't — that's why we prefer the escript).
+    # NOTE: include/ is KEPT — hex deps compile .erl files with
+    # `-include_lib("app/include/*.hrl")` against this ERTS as ROOTDIR.
     pushd "$root" >/dev/null
-    find . -type d \( -name src -o -name include -o -name test -o -name examples \) \
+    find . -type d \( -name src -o -name test -o -name examples \) \
       -exec rm -rf {} + 2>/dev/null || true
     rm -f  InstallInfo Install.ini Uninstall.exe setup.exe 2>/dev/null || true
     find . -type d -path '*/erts-*/doc' -exec rm -rf {} + 2>/dev/null || true
