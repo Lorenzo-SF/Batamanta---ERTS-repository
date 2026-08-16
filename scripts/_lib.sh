@@ -640,8 +640,8 @@ fi
 # — the upstream builds ship src/, include/, test/, examples/ which we don't
 # need and which inflate the tarball by 30-50%.
 # NOTE: lib/*/include is KEPT. Hex deps compile .erl files with
-# `-include_lib("app/include/*.hrl")` (e.g. mint's mint_shims.erl uses
-# `public_key/include/public_key.hrl`), and batamanta compiles the release
+# \`-include_lib("app/include/*.hrl")\` (e.g. mint's mint_shims.erl uses
+# \`public_key/include/public_key.hrl\`), and batamanta compiles the release
 # with this ERTS as ROOTDIR — without the .hrl files that compilation fails.
 rm -rf lib/*/src  lib/*/test  lib/*/examples
 rm -f  InstallInfo  Install.ini
@@ -771,7 +771,7 @@ sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/erl
 sed -i '' 's|^ROOTDIR=.*|ROOTDIR="\$(dirname "\$(dirname "\$(PWD)")")"|' bin/start
 # Strip everything that isn't needed at runtime
 # NOTE: lib/*/include is KEPT — hex deps compile .erl files with
-# `-include_lib("app/include/*.hrl")` against this ERTS as ROOTDIR.
+# \`-include_lib("app/include/*.hrl")\` against this ERTS as ROOTDIR.
 rm -rf lib/*/src lib/*/test lib/*/examples
 rm -f  InstallInfo Install.ini
 # Strip macOS-specific metadata from the archive. Without this, the
