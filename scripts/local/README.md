@@ -43,14 +43,33 @@ are **byte-identical** to what the CI would produce.
 cd ~/recursos/proyectos/zaguan/batamanta-erts-repo
 git pull
 
-# 2. Build whatever targets your machine can handle
+# 2. ONE command for everything this host can build.
+#    Asks whether to wipe every release ("borrón y cuenta nueva") or just
+#    update what's missing, then detects the OS/arch and runs the
+#    regenerate-* scripts this host can actually build:
+#      Linux x86_64  -> windows-amd64 + linux glibc/musl amd64
+#      Linux aarch64 -> windows-amd64 + linux glibc/musl arm64
+#      macOS arm64   -> darwin-arm64  + linux glibc/musl arm64
+#      macOS x86_64  -> darwin-amd64  + linux glibc/musl amd64
+#      Windows       -> windows-amd64
+./scripts/local/sync-erts.sh
+#   --wipe        force borrón y cuenta nueva (no ask)
+#   --no-wipe     force update-only (no ask)
+#   28.4.2        only that OTP version
+#   <target>      only that target
+
+# 3. Or build specific targets manually:
 ./scripts/local/regenerate-windows-amd64.sh   # Windows + Git Bash
 ./scripts/local/regenerate-linux-amd64.sh    # Windows/macOS/Linux + Docker
 # (run on your Mac) ./scripts/local/regenerate-darwin.sh
 
-# 3. Sync the manifest so the batamanta library sees the new assets
+# 4. Sync the manifest so the batamanta library sees the new assets
 ./scripts/local/regenerate-manifest.py
 ```
+
+`sync-erts.sh` runs `regenerate-manifest.py`'s equivalent (`generate_manifest`)
+automatically at the end, so step 3/4 is only needed when you build targets
+manually instead of through the sync entry point.
 
 The last step is the safety net — it walks every release in the repo,
 reads the actual attached assets, and rebuilds `MANIFEST.json` from

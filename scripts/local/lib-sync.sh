@@ -25,6 +25,7 @@ SYNC_UPLOAD="${SYNC_UPLOAD:-1}"
 # (target_key, asset_filename, build_script) for target i.
 ALL_TARGETS=(
   windows-amd64
+  darwin-amd64
   darwin-arm64
   linux-glibc-amd64
   linux-glibc-arm64
@@ -33,6 +34,7 @@ ALL_TARGETS=(
 )
 declare -A TARGET_ASSET=(
   [windows-amd64]="windows-amd64.zip"
+  [darwin-amd64]="darwin-amd64.tar.gz"
   [darwin-arm64]="darwin-arm64.tar.gz"
   [linux-glibc-amd64]="linux-glibc-amd64.tar.gz"
   [linux-glibc-arm64]="linux-glibc-arm64.tar.gz"
@@ -41,6 +43,7 @@ declare -A TARGET_ASSET=(
 )
 declare -A TARGET_SCRIPT=(
   [windows-amd64]="scripts/erts-windows-amd64.sh"
+  [darwin-amd64]="scripts/erts-darwin-amd64.sh"
   [darwin-arm64]="scripts/erts-darwin-arm64.sh"
   [linux-glibc-amd64]="scripts/erts-linux-glibc-amd64.sh"
   [linux-glibc-arm64]="scripts/erts-linux-glibc-arm64.sh"
@@ -49,6 +52,7 @@ declare -A TARGET_SCRIPT=(
 )
 declare -A TARGET_RUNNER=(
   [windows-amd64]="windows-latest"
+  [darwin-amd64]="macos-latest"
   [darwin-arm64]="macos-latest"
   [linux-glibc-amd64]="ubuntu-latest"
   [linux-glibc-arm64]="ubuntu-latest"
