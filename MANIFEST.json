@@ -70,19 +70,23 @@
   },
   "OTP-28.3": {
     "linux-glibc-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3/linux-glibc-amd64.tar.gz",
-    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3/linux-musl-amd64.tar.gz"
+    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3/linux-musl-amd64.tar.gz",
+    "windows-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.3/windows-amd64.zip"
   },
   "OTP-28.2": {
     "linux-glibc-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.2/linux-glibc-amd64.tar.gz",
-    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.2/linux-musl-amd64.tar.gz"
+    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.2/linux-musl-amd64.tar.gz",
+    "windows-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.2/windows-amd64.zip"
   },
   "OTP-28.1.1": {
     "linux-glibc-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1.1/linux-glibc-amd64.tar.gz",
-    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1.1/linux-musl-amd64.tar.gz"
+    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1.1/linux-musl-amd64.tar.gz",
+    "windows-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1.1/windows-amd64.zip"
   },
   "OTP-28.1": {
     "linux-glibc-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1/linux-glibc-amd64.tar.gz",
-    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1/linux-musl-amd64.tar.gz"
+    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1/linux-musl-amd64.tar.gz",
+    "windows-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.1/windows-amd64.zip"
   },
   "OTP-28.0.4": {
     "linux-glibc-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.0.4/linux-glibc-amd64.tar.gz",
@@ -96,7 +100,8 @@
   },
   "OTP-28.0.2": {
     "linux-glibc-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.0.2/linux-glibc-amd64.tar.gz",
-    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.0.2/linux-musl-amd64.tar.gz"
+    "linux-musl-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.0.2/linux-musl-amd64.tar.gz",
+    "windows-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.0.2/windows-amd64.zip"
   },
   "OTP-28.0.1": {
     "linux-glibc-amd64": "https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases/download/OTP-28.0.1/linux-glibc-amd64.tar.gz",

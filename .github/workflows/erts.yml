@@ -238,7 +238,8 @@ jobs:
         if: matrix.runner == 'ubuntu-latest' || matrix.runner == 'macos-latest'
         run: |
           if [[ "${{ matrix.runner }}" == "macos-latest" ]]; then
-            brew install jq gh
+            # macOS runners ship /bin/bash = 3.2.57; sync-erts.sh needs bash 5+.
+            brew install jq gh bash
           else
             sudo apt-get update
             sudo apt-get install -y jq gh
@@ -254,7 +255,19 @@ jobs:
           BATAMANTA_DRY_RUN: "0"
         run: |
           chmod +x ./scripts/local/*.sh 2>/dev/null || true
-          ./scripts/local/sync-erts.sh \
+          # macOS runners need bash 5 explicitly (system bash is 3.2).
+          if [[ "${{ matrix.runner }}" == "macos-latest" ]]; then
+            if [[ -x /opt/homebrew/bin/bash ]]; then
+              BASH_BIN="/opt/homebrew/bin/bash"
+            elif [[ -x /usr/local/bin/bash ]]; then
+              BASH_BIN="/usr/local/bin/bash"
+            else
+              BASH_BIN="bash"
+            fi
+          else
+            BASH_BIN="bash"
+          fi
+          "$BASH_BIN" ./scripts/local/sync-erts.sh \
             --version=${{ matrix.version }} \
             --no-manifest \
             ${{ matrix.target }}

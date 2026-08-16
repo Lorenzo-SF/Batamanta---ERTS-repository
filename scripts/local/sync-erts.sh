@@ -293,7 +293,10 @@ if [[ ${#ONLY_TARGETS[@]} -eq 0 ]]; then
 fi
 
 # ── 1. Sync releases against erlang/otp ────────────────────────────────
-if (( DO_RELEASE_SYNC )); then
+# A --version=V run is a single CI matrix cell: the workflow's
+# sync-releases job already created the missing releases, so skip the
+# redundant (and racy, with up to 20 parallel cells) sync here.
+if (( DO_RELEASE_SYNC )) && [[ -z "$ONLY_VERSION" ]]; then
   sync_releases
 fi
 
