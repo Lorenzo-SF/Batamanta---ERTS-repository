@@ -439,13 +439,24 @@ generate_manifest() {
     echo "}"
   } > "$tmp"
 
-  # JSON-validate if we have python3 (CI / macOS). If not (some Windows
-  # hosts), we still trust the writer and move on.
-  if command -v python3 >/dev/null 2>&1; then
-    if ! python3 -c "import json,sys; json.load(open('$tmp'))" 2>/dev/null; then
-      err "  generated manifest failed JSON validation; aborting"
+  # JSON-validate. Prefer jq (always present in CI; installed by
+  # .github/workflows/erts.yml). Keep python3 as a fallback, but
+  # distinguish "shim cannot resolve a version" (asdf without
+  # .tool-versions -> exit 126) from "JSON actually invalid" (exit 1),
+  # otherwise we abort the regeneration on a missing tool and the
+  # MANIFEST.json on disk stays stale forever.
+  if command -v jq >/dev/null 2>&1; then
+    if ! jq empty "$tmp" 2>/dev/null; then
+      err "  generated manifest failed JSON validation (jq); aborting"
       exit 1
     fi
+  elif command -v python3 >/dev/null 2>&1 && python3 -c "exit(0)" 2>/dev/null; then
+    if ! python3 -c "import json,sys; json.load(open('$tmp'))" 2>/dev/null; then
+      err "  generated manifest failed JSON validation (python3); aborting"
+      exit 1
+    fi
+  else
+    warn "  no jq/python3 available, skipping manifest validation"
   fi
 
   mv "$tmp" "$manifest_file"
