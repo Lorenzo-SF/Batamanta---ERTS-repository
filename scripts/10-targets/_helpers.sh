@@ -54,7 +54,7 @@ if [ -f /lib/ld-musl-\$ARCH.so.1 ]; then
   cp /lib/ld-musl-*.so.1 ./bin/ 2>/dev/null || true
 fi
 # Strip everything that isn't needed at runtime. The lib/*/include dir is
-# KEPT — hex deps compile .erl with `-include_lib("app/include/*.hrl")` and
+# KEPT — hex deps compile .erl with '-include_lib("app/include/*.hrl")' and
 # batamanta compiles the release with this ERTS as ROOTDIR.
 rm -rf lib/*/src  lib/*/test  lib/*/examples
 rm -f  InstallInfo  Install.ini
