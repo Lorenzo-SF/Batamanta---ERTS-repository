@@ -67,13 +67,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: bash -n on every .sh
+      - name: bash -n on every .sh (incl. _legacy/, but those are warnings only)
         run: |
           set -e
-          for f in $(find scripts -maxdepth 2 -name '*.sh'); do
-            echo "checking $f"
-            bash -n "$f"
+          fail=0
+          for f in $(find scripts _legacy -maxdepth 3 -name '*.sh' 2>/dev/null); do
+            if ! bash -n "$f"; then
+              echo "::error::bash -n failed on $f"
+              fail=1
+            fi
           done
+          exit $fail
 
       - name: validate parse-release-assets.escript parses JSON
         if: always()
@@ -87,6 +91,116 @@ jobs:
           set -e
           test -f MANIFEST.json || { echo "no MANIFEST.json (yet)"; exit 0; }
           jq -e 'type == "object"' MANIFEST.json >/dev/null
+
+  # -------------------------------------------------------------------------
+  #  auto-detect-weekly — every Monday 06:00 UTC, ask upstream erlang/otp
+  #  what the latest stable OTP versions are, compare against the local
+  #  MANIFEST.json, and if there are new entries, open a labelled GitHub
+  #  issue so a human (or the daily sync-releases job below) knows to act.
+  #
+  #  This is the "que cada semana se chequease si hay versiones nuevas"
+  #  hook the user asked for. The actual build+push continues to happen
+  #  in the schedule'd `build` job further down, which runs the FULL
+  #  matrix every Monday. This job is purely informational — opening
+  #  the issue is the cheapest possible state change, and lets you
+  #  cross-check upstream before the build churn starts.
+  # -------------------------------------------------------------------------
+  auto-detect-weekly:
+    name: Auto-detect new OTP versions
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq + curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+      - name: Compare upstream tags vs local MANIFEST
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIN_OTP_VERSION: ${{ inputs.min_version }}
+        run: |
+          set -euo pipefail
+
+          # 1. Versions we already mirror.
+          if [[ -f MANIFEST.json ]]; then
+            local_versions=$(jq -r 'keys[] | sub("^OTP-"; "")' MANIFEST.json | sort -V)
+          else
+            local_versions=""
+          fi
+
+          # 2. Stable OTP tags upstream (erlang/otp). Filter to >= MIN_OTP_VERSION
+          #    (default 27.0) and to numeric X.Y or X.Y.Z shape. erlang/otp tags
+          #    are 'OTP-<version>' but can include prereleases — we ask the API
+          #    for all tags and filter by version shape.
+          upstream_tags="$(curl -fsSL \
+            -H "$(if [[ -n "${GH_TOKEN:-}" ]]; then printf 'Authorization: Bearer %s' "$GH_TOKEN"; else printf 'Accept: application/vnd.github+json'; fi)" \
+            "https://api.github.com/repos/erlang/otp/tags?per_page=100" \
+            | jq -r '.[].name | sub("^OTP-"; "")' \
+            | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$')"
+
+          # 3. Drop anything < MIN_OTP_VERSION (e.g. 26.0/1.x we don't ship).
+          min="${MIN_OTP_VERSION:-27.0}"
+          upstream_filtered="$(printf '%s\n' "$upstream_tags" \
+            | awk -v min="$min" '
+                function vcmp(a, b,    i, n, x, y) {
+                  n = split(a, x, "."); n = split(b, y, ".")
+                  for (i=1; i<=n || i<=length(y); i++) {
+                    if ((x[i]+0) < (y[i]+0)) return -1
+                    if ((x[i]+0) > (y[i]+0)) return  1
+                  }
+                  return 0
+                }
+                { if (vcomp($0, min) >= 0) print }' \
+            | sort -V)"
+
+          # 4. Compute the set difference (new = upstream \ local).
+          new_versions="$(printf '%s\n%s\n' "$upstream_filtered" "$local_versions" \
+            | sort -V | uniq -u \
+            | comm -23 <(printf '%s\n' "$upstream_filtered") <(printf '%s\n' "$local_versions"))"
+
+          if [[ -z "$new_versions" ]]; then
+            echo "no new OTP versions detected"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "list=" >> "$GITHUB_OUTPUT"
+          else
+            count=$(printf '%s\n' "$new_versions" | grep -c .)
+            list=$(printf '%s\n' "$new_versions" | tr '\n' ',' | sed 's/,$//')
+            echo "new_versions=$list (count=$count)"
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+            echo "list=$list" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open an issue if new versions are found
+        if: steps.detect.outputs.count > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIST: ${{ steps.detect.outputs.list }}
+          BODY_FILE: /tmp/auto-detect-body.md
+        run: |
+          set -euo pipefail
+          {
+            echo "Auto-detect (weekly cron) found these new stable OTP versions upstream that aren't in MANIFEST.json yet:"
+            echo
+            printf '%s' "$LIST" | tr ',' '\n' | sed 's/^/- /'
+            echo
+            echo "Next steps:"
+            echo "1. The next scheduled run of the sync-releases job (also Monday) will create the matching empty release tags via gh release create."
+            echo "2. The build matrix then picks them up and builds each (target, version) cell."
+            echo
+            echo "If you want to skip the cron and build right now, run the workflow manually (workflow_dispatch) and pass one of the new versions in 'version'."
+            echo
+            echo "(This issue is created automatically by .github/workflows/erts.yml:auto-detect-weekly.)"
+          } > "$BODY_FILE"
+
+          gh issue create \
+            --title "New OTP versions detected upstream: $LIST" \
+            --label "auto-detect" \
+            --label "erts-mirror" \
+            --body-file "$BODY_FILE"
 
   # -------------------------------------------------------------------------
   #  sync-releases — run sync-erts.sh --releases-only to ensure every stable
