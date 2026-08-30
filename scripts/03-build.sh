@@ -370,7 +370,10 @@ EOF
 _build_cell() {
   # _build_cell <target> <version>
   #  The per-(target,version) build body, called under a lock by build_target.
-  local target="$1" v="$2"
+  #  We use ${1:-} defaults to avoid crashing when build_target is called
+  #  with empty positional args under `set -u` (line 373 used to crash
+  #  with "$1: unbound variable" when --auto path called into here).
+  local target="${1:-}" v="${2:-}"
   local asset="${TARGET_ASSET[$target]:-}"
   local tag="OTP-$v"
 
