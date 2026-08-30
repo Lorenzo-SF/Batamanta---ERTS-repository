@@ -208,12 +208,16 @@ download_precompiled() {
 #  Locking — one build per (target, version)
 # -----------------------------------------------------------------------------
 with_lock() {
-  # with_lock <target> <version> <fn>
+  # with_lock <target> <version> <fn> [args...]
   #  Acquire an exclusive file lock for the (target, version) cell before
   #  running the build function. If the lock is held elsewhere, poll for
   #  ~10s; if it's still held, skip (assume another erts_gen is working on
   #  this cell).
+  #  Forward all remaining positional arguments to $fn so callers like
+  #  `with_lock "$t" "$v" _build_cell "$t" "$v"` reach _build_cell with
+  #  its expected `<target> <version>` argv intact.
   local target="$1" v="$2" fn="$3"
+  shift 3
   local lock_dir="$LOCKS"
   mkdir -p "$lock_dir"
   local lock_file="$lock_dir/${target}-${v}.lock"
@@ -229,7 +233,7 @@ with_lock() {
     warn "$target/$v is locked by another process — skipping"
     return 0
   fi
-  "$fn"
+  "$fn" "$@"
   local rc=$?
   rm -f "$lock_file"
   return $rc
