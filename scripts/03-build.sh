@@ -374,7 +374,8 @@ _build_cell() {
   #  with empty positional args under `set -u` (line 373 used to crash
   #  with "$1: unbound variable" when --auto path called into here).
   local target="${1:-}" v="${2:-}"
-  local asset="${TARGET_ASSET[$target]:-}"
+  local asset=""
+  if [[ -n "$target" ]]; then asset="${TARGET_ASSET[$target]:-}"; fi
   local tag="OTP-$v"
 
   if [[ -z "${BATAMANTA_FORCE:-}" ]] \
