@@ -83,8 +83,16 @@ jobs:
         if: always()
         run: |
           set -e
-          python3 -c "import ast; [ast.parse(open(f, encoding='utf-8').read()) for f in __import__('glob').glob('scripts/local/*.py')]; print('py OK')"
-          test -f scripts/local/parse-release-assets.escript
+          # The escript (Erlang) + Python helpers moved to _legacy/ when
+          # we switched to erts_gen + setup.d-style scripts. Look in both
+          # places so the lint job survives the transition.
+          escript=$(find scripts _legacy -name parse-release-assets.escript 2>/dev/null | head -1)
+          if [[ -z "$escript" ]]; then
+            echo "::error::parse-release-assets.escript not found anywhere"
+            exit 1
+          fi
+          test -f "$escript"
+          python3 -c "import ast,glob; [ast.parse(open(f, encoding='utf-8').read()) for f in glob.glob('scripts/**/*.py', recursive=True) + glob.glob('_legacy/**/*.py', recursive=True)]; print('py OK')"
 
       - name: jq on MANIFEST.json
         run: |
@@ -219,13 +227,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq gh
 
-      - name: sync-erts.sh --releases-only
+      - name: erts_gen sync-releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MIN_OTP_VERSION: ${{ inputs.min_version }}
         run: |
-          chmod +x ./scripts/local/*.sh
-          ./scripts/local/sync-erts.sh --releases-only
+          # Source _lib.sh (which loads 00-04 + 10-targets/* + runs the
+          # public-surface self-test) and call sync_releases() directly.
+          # This is the same behaviour the old sync-erts.sh --releases-only
+          # path had, but going through the new setup.d-shaped lib.
+          bash -c '. ./scripts/_lib.sh && sync_releases'
 
       - name: Handle regenerate_from_zero
         if: ${{ inputs.regenerate_from_zero == true }}
@@ -233,7 +244,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "regenerate_from_zero=true — wiping the whole repo..."
-          ./scripts/local/sync-erts.sh regenerate-from-zero
+          # erts_gen regen (with --force) is the destructive wipe + rebuild.
+          # For the wipe-only-from-CI case we just clear MANIFEST; the next
+          # `sync-releases` job below will rebuild via the regular flow.
+          . ./scripts/_lib.sh
+          wipe_all_releases
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add MANIFEST.json
@@ -272,15 +287,11 @@ jobs:
           if [[ -n "${{ inputs.version }}" ]]; then
             versions="${{ inputs.version }}"
           else
-            # Ask the repo (via sync-erts.sh's list helper) for every
-            # stable OTP version we have a release for.
-            versions="$(./scripts/local/sync-erts.sh --releases-only --help >/dev/null 2>&1; \
-              gh release list --repo Lorenzo-SF/Batamanta---ERTS-repository --limit 200 --json tagName \
-                | jq -r '.[].tagName' \
-                | sed 's/^OTP-//' \
-                | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
-                | sort -V \
-              )"
+            # Ask the repo for every stable OTP version we have a release
+            # for. Sources _lib.sh just to surface list_local_versions,
+            # but the actual query is the same gh release list call.
+            . ./scripts/_lib.sh
+            versions="$(list_local_versions)"
             if [[ -z "$versions" ]]; then
               echo "no versions found"
               echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
@@ -368,23 +379,15 @@ jobs:
           BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BATAMANTA_DRY_RUN: "0"
         run: |
-          chmod +x ./scripts/local/*.sh 2>/dev/null || true
-          # macOS runners need bash 5 explicitly (system bash is 3.2).
-          if [[ "${{ matrix.runner }}" == "macos-latest" ]]; then
-            if [[ -x /opt/homebrew/bin/bash ]]; then
-              BASH_BIN="/opt/homebrew/bin/bash"
-            elif [[ -x /usr/local/bin/bash ]]; then
-              BASH_BIN="/usr/local/bin/bash"
-            else
-              BASH_BIN="bash"
-            fi
-          else
-            BASH_BIN="bash"
-          fi
-          "$BASH_BIN" ./scripts/local/sync-erts.sh \
-            --version=${{ matrix.version }} \
-            --no-manifest \
-            ${{ matrix.target }}
+          # The CI runs on ubuntu-latest (Linux bash 5+) or macos-latest
+          # (Homebrew bash 5+ installed by the step above) or
+          # windows-latest (Git Bash 5+ via Git for Windows).
+          # Each runner's bash is compatible with the lib (_lib.sh still
+          # sources _bash_guard.sh which refuses bash < 5 just in case).
+          # Source _lib.sh (which loads 00-04 + 10-targets/* + runs the
+          # public-surface self-test) and call build_target directly.
+          . ./scripts/_lib.sh
+          build_target "${{ matrix.target }}" --only="${{ matrix.version }}" --no-manifest
 
       - name: Upload tarball as artifact (debug aid)
         if: always()
@@ -417,12 +420,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq gh
 
-      - name: Regenerate MANIFEST.json via sync-erts.sh
+      - name: Regenerate MANIFEST.json via erts_gen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          chmod +x ./scripts/local/*.sh
-          ./scripts/local/sync-erts.sh --manifest-only
+          # erts_gen auto = sync_releases + build + generate_manifest.
+          # We run it here after every build finished; the sync_releases
+          # + build parts are no-ops (everything is already done and
+          # build_target is keyed on (target, version)), so the only
+          # effective action is generate_manifest — the same one
+          # sync-erts.sh --manifest-only used to do.
+          bash ./scripts/erts_gen check      # PR-style visibility
+          bash ./scripts/erts_gen auto       # idempotent regen + manifest
 
       - name: Commit & push any manifest changes
         run: |

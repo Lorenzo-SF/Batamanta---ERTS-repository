@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  sync — top-level convenience wrapper around scripts/local/sync-erts.sh
+#  sync — top-level convenience wrapper around erts_gen
 # =============================================================================
 #
 #  Both the CI (.github/workflows/erts.yml) and humans on macOS / CachyOS /
-#  Windows reach the pipeline via scripts/local/sync-erts.sh. This shim
+#  Windows reach the pipeline via erts_gen. This shim
 #  exists for the common case where the caller is at the repo root and
-#  doesn't want to type ./scripts/local/sync-erts.sh.
+#  doesn't want to type ./erts_gen.
 #
 #  Usage (identical to sync-erts.sh):
 #
@@ -18,9 +18,9 @@
 #     ./scripts/sync --version=28.4.2 --no-manifest <target>
 #
 #  This file is intentionally a 3-line wrapper. If we ever break
-#  scripts/local/sync-erts.sh (renames, refactors, etc), update the
-#  path here too. The CI workflow keeps using scripts/local/sync-erts.sh
+#  erts_gen (renames, refactors, etc), update the
+#  path here too. The CI workflow keeps using erts_gen
 #  directly so we don't accidentally break scheduled runs.
 #
 # shellcheck disable=SC1090
-exec "$(dirname "${BASH_SOURCE[0]}")/local/sync-erts.sh" "$@"
+exec "$(dirname "${BASH_SOURCE[0]}")/erts_gen" "$@"

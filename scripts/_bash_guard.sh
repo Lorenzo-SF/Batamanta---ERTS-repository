@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # _bash_guard.sh — centralised bash 5+ check.
 #
-# Every entry-point script in this repo (scripts/erts-*.sh, scripts/local/*.sh)
-# sources this file as the very first thing after the shebang. If the
-# interpreter is older than bash 5 we refuse to run, because the rest of the
-# code relies on:
+# Every entry-point script in this repo (scripts/erts_gen, scripts/sync,
+# the per-target 10-targets/*.sh scripts, plus any custom entry-point that
+# sources scripts/_lib.sh) sources this file as the very first thing after
+# the shebang. If the interpreter is older than bash 5 we refuse to run,
+# because the rest of the code relies on:
 #
 #   - `declare -A` (associative arrays)          (bash 4+)
 #   - `${var,,}` / `${var^^}` (case munging)     (bash 4+)
