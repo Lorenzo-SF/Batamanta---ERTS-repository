@@ -51,9 +51,14 @@ MANIFEST="$REPO_ROOT/MANIFEST.json"
 SRC_TEMP="$REPO_ROOT/src_temp"
 DIST="$REPO_ROOT/dist"
 LOCKS="$REPO_ROOT/.locks"
+STATE_FILE="$REPO_ROOT/.build-state.json"
 LOG_PREFIX="[batamanta-erts]"
 
 mkdir -p "$SRC_TEMP" "$DIST" "$LOCKS"
+# STATE_FILE is read by 01-detect.sh::_state_get() and friends. Touch
+# it here so the first source doesn't trip on `set -u` when the file
+# is genuinely absent.
+[[ -f "$STATE_FILE" ]] || : > "$STATE_FILE"
 
 # -----------------------------------------------------------------------------
 #  Target catalog
@@ -98,10 +103,10 @@ declare -A TARGET_DEPS_CMD=(
   [linux-musl-arm64]="apk add --no-cache build-base autoconf ncurses-dev openssl-dev zlib-dev perl bash coreutils zstd"
 )
 declare -A TARGET_ASSET=(
-  [linux-glibc-amd64]="amd64-glibc.tar.gz"
-  [linux-glibc-arm64]="arm64-glibc.tar.gz"
-  [linux-musl-amd64]="amd64-musl.tar.gz"
-  [linux-musl-arm64]="arm64-musl.tar.gz"
+  [linux-glibc-amd64]="linux-glibc-amd64.tar.gz"
+  [linux-glibc-arm64]="linux-glibc-arm64.tar.gz"
+  [linux-musl-amd64]="linux-musl-amd64.tar.gz"
+  [linux-musl-arm64]="linux-musl-arm64.tar.gz"
   [darwin-amd64]="darwin-amd64.tar.gz"
   [darwin-arm64]="darwin-arm64.tar.gz"
   [windows-amd64]="windows-amd64.zip"
@@ -128,8 +133,11 @@ declare -A UPSTREAM_ASSET=(
 #    * "<minor>"     — only versions of that minor (e.g. "28" → 28.x.y)
 #    * "explicit"    — only the versions passed as $@ to build_target
 declare -a OTP_VERSIONS=(
-  # Pinned baseline versions. The detect step will append anything new
-  # that `erlang/otp` has released and that isn't in the manifest yet.
+  # Pinned baseline versions. The CI's detect step computes the full
+  # upstream list and appends anything new that `erlang/otp` has released
+  # and that isn't in the manifest yet — see scripts/03-build.sh's
+  # "build plan" block. This baseline just keeps the build matrix
+  # deterministic on hosts where `gh` isn't authenticated.
   25.0 25.0.1 25.0.2 25.0.3 25.0.4
   25.1 25.1.1 25.1.2
   25.2 25.2.1 25.2.2 25.2.3
@@ -144,6 +152,14 @@ declare -a OTP_VERSIONS=(
   28.0 28.0.1 28.0.2 28.0.3 28.0.4
   28.1 28.1.1
   28.2 28.3 28.4
+  # The ones below are technically above the 8-target refactor's
+  # snapshot date but the CI's auto-discovery picks them up too. Listed
+  # here so local `erts_gen auto` runs without gh-auth produce the same
+  # matrix as the GH Actions schedule.
+  27.3.4
+  28.4.1 28.4.2 28.4.3
+  28.5
+  29.0 29.0.1 29.0.2 29.0.3 29.0.4
 )
 
 # -----------------------------------------------------------------------------

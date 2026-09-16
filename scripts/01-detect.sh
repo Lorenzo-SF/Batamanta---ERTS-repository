@@ -118,6 +118,7 @@ _compute_build_plan() {
   fi
   local targets=("$@")
   local target v tag code url
+  local min_version="${DETECT_MIN_VERSION:-}"
   for target in "${targets[@]}"; do
     local asset="${TARGET_ASSET[$target]:-}"
     if [[ -z "$asset" ]]; then
@@ -126,6 +127,16 @@ _compute_build_plan() {
     fi
     for v in "${OTP_VERSIONS[@]}"; do
       tag="OTP-$v"
+      # Honor the same min_version floor as detect_new_versions. Without
+      # this, the workflow would queue 25.x / 26.x builds even though
+      # those releases are below the configured floor (default 27.0).
+      if [[ -n "$min_version" ]]; then
+        local lower
+        lower="$(printf '%s\n%s\n' "$v" "$min_version" | sort -V | head -n1)"
+        if [[ "$lower" != "$min_version" ]]; then
+          continue
+        fi
+      fi
       if [[ -z "${BATAMANTA_FORCE:-}" ]] \
          && [[ "$(_state_get "$target/$v")" == "done" ]] \
          && asset_in_release "$tag" "$asset"; then
