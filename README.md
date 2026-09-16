@@ -4,7 +4,20 @@
 
 Welcome to the **Batamanta ERTS Repository**! This project serves as a centralized, ready-to-use archive for pre-compiled Erlang Run-Time System (ERTS) binaries.
 
-If you want to skip the lengthy Erlang/OTP compilation process and get straight to building your Elixir/Erlang applications, you are in the right place.
+If you want to skip the lengthy Erlang/OTP compilation process and get
+straight to building your Elixir/Erlang applications, you are in the
+right place.
+
+> **⚠️ macOS users**: the build scripts require **bash 4+** (for associative
+> arrays). macOS ships bash 3.2.57 as `/bin/bash`, which is from 2007. Install
+> bash 5 via Homebrew and re-run with the new interpreter:
+>
+> ```bash
+> brew install bash
+> /opt/homebrew/bin/bash ./scripts/local/regenerate-darwin.sh
+> ```
+>
+> The script will refuse to run on bash < 4 and tell you exactly what to do.
 
 ---
 
@@ -12,11 +25,11 @@ If you want to skip the lengthy Erlang/OTP compilation process and get straight 
 
 We provide pre-compiled binaries for the following targets:
 
-* **Linux (glibc):** `x86_64` & `aarch64` (Standard Ubuntu/Debian/etc.) — compiled from source with our custom build script
-* **Linux (musl):**  `x86_64` & `aarch64` (Alpine and other musl-based distros) — compiled from source with our custom build script
-* **macOS:**         `arm64` (Apple Silicon / M-series chips) — compiled natively from source
-* **Windows:**       `x86_64` — re-packaged from the official `erlang/otp` prebuilt zip (faster & more reliable than cross-compiling in CI)
-* **Windows:**       `arm64` — placeholder, see `erts-windows-arm64.sh` for status
+- **Linux (glibc):** `x86_64` & `aarch64` (Standard Ubuntu/Debian/etc.) — compiled from source with our custom build script
+- **Linux (musl):** `x86_64` & `aarch64` (Alpine and other musl-based distros) — compiled from source with our custom build script
+- **macOS:** `arm64` (Apple Silicon / M-series chips) — compiled natively from source
+- **Windows:** `x86_64` — re-packaged from the official `erlang/otp` prebuilt zip (faster & more reliable than cross-compiling in CI)
+- **Windows:** `arm64` — placeholder, see `erts-windows-arm64.sh` for status
 
 Every tarball/zip has the **same internal layout** so the upstream `Batamanta` Elixir library can consume any target with the same code path.
 
@@ -65,19 +78,19 @@ To build (or rebuild) a single target for a specific version:
 Useful environment variables:
 
 | Variable                     | Effect                                                                 |
-|------------------------------|------------------------------------------------------------------------|
+| ---------------------------- | ---------------------------------------------------------------------- |
 | `BATAMANTA_DRY_RUN=1`        | Print what would run, don't actually do anything                       |
-| `BATAMANTA_FORCE=1`          | Rebuild even if the release asset is already present                    |
+| `BATAMANTA_FORCE=1`          | Rebuild even if the release asset is already present                   |
 | `BATAMANTA_GITHUB_TOKEN=...` | Use this token for the GitHub API (raises the 60/h anonymous rate cap) |
 
 ## 🤖 CI
 
 `.github/workflows/erts.yml` runs:
 
-* **Weekly** (Monday 06:00 UTC) — calls `detect-versions.sh`, then for every
+- **Weekly** (Monday 06:00 UTC) — calls `detect-versions.sh`, then for every
   missing (target, version) pair runs the corresponding wrapper, uploads
   the tarball/zip to the GitHub Release, and updates `MANIFEST.json`.
-* **Manually** via the Actions tab — pick a specific version and/or a
+- **Manually** via the Actions tab — pick a specific version and/or a
   subset of targets from the `workflow_dispatch` inputs.
 
 The matrix covers all 7 targets. `darwin-arm64` runs on `macos-latest`;
@@ -89,12 +102,12 @@ Windows uses `windows-latest`.
 **All binaries are hosted in GitHub Releases**, not in the git source tree
 (to keep the repo small and fast to clone).
 
-* **Download:** Go to the [Releases](https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases) page and grab the archive for your target OS and architecture from your desired OTP version.
-* **Extract:** Unzip the archive into your preferred directory (e.g. `~/.local/share/erts`).
-* **Update PATH:** Add the extracted `bin` directory to your system's PATH.
+- **Download:** Go to the [Releases](https://github.com/Lorenzo-SF/Batamanta---ERTS-repository/releases) page and grab the archive for your target OS and architecture from your desired OTP version.
+- **Extract:** Unzip the archive into your preferred directory (e.g. `~/.local/share/erts`).
+- **Update PATH:** Add the extracted `bin` directory to your system's PATH.
 
-*Note: Our builds inject dynamic path discovery (`ROOTDIR` magic), so the
-ERTS will work seamlessly no matter where you extract it!*
+_Note: Our builds inject dynamic path discovery (`ROOTDIR` magic), so the
+ERTS will work seamlessly no matter where you extract it!_
 
 **Example using Fish shell:**
 

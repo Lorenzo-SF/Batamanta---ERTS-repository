@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  erts_gen — single entry point for the Batamanta---ERTS-repository pipeline.
+# =============================================================================
+#
+#  Three subcommands, both work manually (any host with bash 5+) and
+#  autonomously (the CI workflow .github/workflows/erts.yml calls `auto`).
+#
+#  Usage:
+#
+#    erts_gen check                       # dry-run: report what's missing
+#    erts_gen auto [--target=…] [--version=…] [--dry-run]
+#    erts_gen regen [--all|--arm64|--amd64] [--force]
+#
+#  Both `auto` and `regen` need a GH_TOKEN with Contents: write on the
+#  repo (the env var GH_TOKEN, BATAMANTA_GITHUB_TOKEN, or the local
+#  ~/Documents/PowerShell/secrets.ps1 file — see 00-utils.sh for the
+#  bootstrap order).
+#
+#  Examples:
+#
+#    erts_gen check                                            # what can I do?
+#    erts_gen auto                                             # do everything missing
+#    erts_gen auto --version=28.5                              # only OTP 28.5
+#    erts_gen auto --target=darwin-arm64                       # only that target
+#    erts_gen auto --dry-run                                   # show plan, don't act
+#    erts_gen regen --all --force                              # wipe + rebuild all
+#    erts_gen regen --arm64                                    # wipe (with confirm) +
+#                                                              #   only arm64 targets
+#    erts_gen regen --amd64 --force                            # wipe + only amd64
+# =============================================================================
+
+set -euo pipefail
+
+ERTS_GEN_VERSION="0.1.0"
+
+# Resolve our own location so we can find _lib.sh next to us.
+ERTS_GEN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ----------------------------------------------------------------------
+#  Source the lib (it self-tests the public surface on load)
+# ----------------------------------------------------------------------
+# shellcheck source=_lib.sh
+. "$ERTS_GEN_DIR/_lib.sh"
+
+# Defaults that erts_gen needs on top of what _lib.sh already does.
+REPO="${REPO:-Lorenzo-SF/Batamanta---ERTS-repository}"
+export REPO
+export BATAMANTA_RETRIES="${BATAMANTA_RETRIES:-3}"
+
+# Command-line state (parsed by parse_args).
+SUBCOMMAND=""
+ARCH_FILTER="all"           # all | arm64 | amd64
+TARGET_FILTER=""            # "" = all targets per ARCH_FILTER
+VERSION_FILTER=""           # "" = all versions
+DRY_RUN=0
+FORCE=0
+AUTO_YES=0
+
+# ----------------------------------------------------------------------
+#  Usage + arg parsing
+# ----------------------------------------------------------------------
+usage() {
+  cat <<EOF
+erts_gen v$ERTS_GEN_VERSION — single entry point for the Batamanta---ERTS-repository
+
+Usage:
+  erts_gen check                       [options]
+  erts_gen auto                        [options]
+  erts_gen regen                       [options]
+
+Subcommands:
+  check                dry-run — report what's missing without acting
+  auto                 detect upstream + sync releases + build everything
+                       missing + regenerate MANIFEST
+  regen                DESTRUCTIVE — wipe every release first, then build.
+                       Confirmation: yes/interactive, or pass --force.
+
+Filtering (auto / regen):
+  --all                both architectures (default)
+  --arm64              only arm64 targets (linux-glibc-arm64, linux-musl-arm64,
+                       darwin-arm64)
+  --amd64              only amd64 targets (linux-glibc-amd64, linux-musl-amd64,
+                       darwin-amd64, windows-amd64)
+  --target=NAME        restrict to a single target (any from --all/--arm64/--amd64)
+  --version=X.Y.Z      restrict to a single OTP version
+  --dry-run            (auto only) show what would be done, don't act
+
+Safety:
+  --force              regen: skip the "are you sure?" prompt. Mandatory in CI.
+  --yes                auto: skip the "are you sure?" prompt for any interactive
+                       confirm inside the build pipeline (e.g. discover).
+
+Examples:
+  erts_gen check
+  erts_gen auto
+  erts_gen auto --dry-run
+  erts_gen auto --target=darwin-arm64
+  erts_gen auto --version=28.5
+  erts_gen regen --arm64                     # asks for confirmation
+  erts_gen regen --all --force               # CI/non-interactive
+  erts_gen regen --amd64 --force
+
+Environment:
+  REPO                    full owner/name (default Lorenzo-SF/Batamanta---ERTS-repository)
+  MIN_OTP_VERSION         upstream floor (default 27.0)
+  GH_TOKEN / BATAMANTA_GITHUB_TOKEN
+                          must grant Contents: write on \$REPO
+  BATAMANTA_DRY_RUN=1     skip all uploads and tarball writes
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help|help)
+        usage; exit 0 ;;
+      check|auto|regen)
+        [[ -z "$SUBCOMMAND" ]] || { err "only one subcommand allowed"; usage; exit 2; }
+        SUBCOMMAND="$1"; shift ;;
+      --all)    ARCH_FILTER="all";  shift ;;
+      --arm64)  ARCH_FILTER="arm64"; shift ;;
+      --amd64)  ARCH_FILTER="amd64"; shift ;;
+      --target=*)
+        TARGET_FILTER="${1#--target=}"; shift ;;
+      --version=*)
+        VERSION_FILTER="${1#--version=}"; shift ;;
+      --dry-run) DRY_RUN=1; export BATAMANTA_DRY_RUN=1; shift ;;
+      --force)   FORCE=1; shift ;;
+      --yes)     AUTO_YES=1; shift ;;
+      -*)
+        err "unknown flag: $1"; usage; exit 2 ;;
+      *)
+        err "unexpected positional argument: $1"; usage; exit 2 ;;
+    esac
+  done
+
+  if [[ -z "$SUBCOMMAND" ]]; then
+    usage; exit 0
+  fi
+
+  # Validate arch-filter + target-filter combo
+  case "$ARCH_FILTER" in
+    all|arm64|amd64) ;;
+    *) err "invalid arch filter: $ARCH_FILTER"; exit 2 ;;
+  esac
+  if [[ -n "$TARGET_FILTER" ]]; then
+    local found=0
+    for t in "${ALL_TARGETS[@]}"; do
+      [[ "$t" == "$TARGET_FILTER" ]] && found=1 && break
+    done
+    if (( !found )); then
+      err "unknown target: $TARGET_FILTER"
+      err "valid: ${ALL_TARGETS[*]}"
+      exit 2
+    fi
+  fi
+}
+
+# Resolve the list of targets we'll act on, based on ARCH_FILTER /
+# TARGET_FILTER. Empty stdin / parameter only; echoes one target per line.
+resolve_targets() {
+  local arr_name
+  case "$ARCH_FILTER" in
+    arm64) arr_name="ARM64_TARGETS" ;;
+    amd64) arr_name="AMD64_TARGETS" ;;
+    all)
+      if [[ -n "$TARGET_FILTER" ]]; then
+        printf '%s\n' "$TARGET_FILTER"
+      else
+        printf '%s\n' "${ALL_TARGETS[@]}"
+      fi
+      return ;;
+  esac
+  if [[ -n "$TARGET_FILTER" ]]; then
+    printf '%s\n' "$TARGET_FILTER"
+  else
+    local -n arr="$arr_name"
+    printf '%s\n' "${arr[@]}"
+  fi
+}
+
+# Resolve the list of OTP versions we'll act on.
+resolve_versions() {
+  if [[ -n "$VERSION_FILTER" ]]; then
+    printf '%s\n' "$VERSION_FILTER"
+    return
+  fi
+  # Use upstream discovery + the pinned baseline union; the build_target
+  # --auto path deduplicates against what's already shipped.
+  list_upstream_versions
+}
+
+# ----------------------------------------------------------------------
+#  Subcommands
+# ----------------------------------------------------------------------
+cmd_check() {
+  log "==> check: dry-run report for $REPO"
+  echo
+  echo "Manually-executable actions you (or erts_gen auto) could run:"
+  echo
+
+  echo "  1. Detect new upstream OTP versions (>= ${MIN_OTP_VERSION:-27.0})"
+  local n=0
+  while IFS= read -r tag; do
+    [[ -z "$tag" ]] && continue
+    if [[ -f "$MANIFEST" ]] && jq -e --arg v "$tag" '.[$v]' "$MANIFEST" >/dev/null 2>&1; then
+      :  # already shipped
+    else
+      printf '       • %s  (not in MANIFEST.json)\n' "$tag"
+      n=$((n+1))
+    fi
+  done < <(list_upstream_versions 2>/dev/null | sed 's/^/OTP-/' )
+  (( n == 0 )) && echo "       (none — every upstream version is already mirrored)"
+
+  echo
+  echo "  2. Sync release tags for the missing versions (above)"
+  echo "       erts_gen auto     # runs this + builds"
+
+  echo
+  echo "  3. Build every (target, version) pair for which the asset is missing."
+  echo "     Targets in this run's filter (arch=$ARCH_FILTER):"
+  resolve_targets | sed 's/^/       • /'
+  echo
+
+  # Per-target build plan if we have the index of upstream versions.
+  echo "  Build plan (per target, what's currently missing):"
+  for target in $(resolve_targets); do
+    local want have missing_count=0
+    want=$(list_upstream_versions | sort -V)
+    have=$(gh release list --repo "$REPO" --limit 300 --json tagName 2>/dev/null \
+      | jq -r '.[].tagName' 2>/dev/null \
+      | sed 's/^OTP-//' | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V)
+    if [[ -z "$want" ]]; then
+      echo "       • $target  (upstream unreachable — check network)"
+      continue
+    fi
+    while IFS= read -r v; do
+      [[ -z "$v" ]] && continue
+      local tag="OTP-$v"
+      local asset="${TARGET_ASSET[$target]:-}"
+      if gh release view "$tag" --repo "$REPO" --json assets -q '.assets[].name' 2>/dev/null \
+         | grep -Fxq "$asset"; then :; else
+        missing_count=$((missing_count + 1))
+      fi
+    done <<< "$want"
+    printf '       • %-22s %s version(s) pending\n' "$target" "$missing_count"
+  done
+
+  echo
+  echo "Run 'erts_gen auto' to act on the plan above."
+}
+
+cmd_auto() {
+  log "==> auto: $REPO — detect → sync-releases → build → manifest"
+  if [[ -n "$VERSION_FILTER" ]]; then
+    log "    version filter: $VERSION_FILTER"
+  fi
+  if [[ -n "$TARGET_FILTER" ]]; then
+    log "    target  filter: $TARGET_FILTER  (arch=$ARCH_FILTER)"
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "    (--dry-run: no uploads, no tarball writes, no manifest commit)"
+  fi
+
+  local targets_file versions_file
+  targets_file="$(mktemp)"; versions_file="$(mktemp)"
+  resolve_targets > "$targets_file"
+  resolve_versions > "$versions_file"
+  trap "rm -f '$targets_file' '$versions_file'" EXIT
+
+  log "    targets : $(tr '\n' ' ' < "$targets_file")"
+  log "    versions: $(wc -l < "$versions_file") candidate(s)"
+
+  # 1. Sync releases — idempotent.
+  sync_releases
+
+  # 2. Build each (target, version) cell. build_target handles
+  #    --auto (auto-compute the per-target build plan), state persistence,
+  #    locking, retries, etc.
+  for target in $(cat "$targets_file"); do
+    [[ -z "$target" ]] && continue
+    log "==> target=$target"
+    if [[ -n "$VERSION_FILTER" ]]; then
+      build_target "$target" --only="$VERSION_FILTER"
+    else
+      build_target "$target" --auto
+    fi
+  done
+
+  # 3. Regenerate MANIFEST.json from the live release set.
+  generate_manifest
+  ok "==> auto: done — MANIFEST.json up to date"
+}
+
+cmd_regen() {
+  log "==> regen: DESTRUCTIVE — will DELETE every OTP-* release, then build"
+  if [[ "$ARCH_FILTER" == "all" ]]; then
+    log "    arch     : all (arm64 + amd64)"
+  else
+    log "    arch     : $ARCH_FILTER"
+  fi
+  if [[ "$FORCE" != "1" ]]; then
+    if [[ -t 0 ]]; then
+      printf '\033[31;1m⚠  regen will DELETE every OTP-* release in %s.\033[0m\n' "$REPO" >&2
+      printf '   This wipes the entire release mirror. Continue? [y/N] ' >&2
+      read -r _ans
+      [[ "${_ans,,}" == "y" || "${_ans,,}" == "yes" ]] || { err "cancelled"; exit 1; }
+    else
+      err "regen needs --force when stdin is not a TTY (e.g. CI)"
+      exit 1
+    fi
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "    --dry-run: skip the destructive wipe and the build, only show plan"
+    cmd_check
+    return
+  fi
+
+  wipe_all_releases
+  cmd_auto
+}
+
+# ----------------------------------------------------------------------
+#  Entry point
+# ----------------------------------------------------------------------
+main() {
+  parse_args "$@"
+
+  # The lib's logging prefix is fixed to [batamanta-erts]; we could
+  # override LOG_PREFIX here if we wanted a [erts_gen] prefix but the
+  # mixed output during a build run is more useful than homogeneous.
+
+  case "$SUBCOMMAND" in
+    check) cmd_check ;;
+    auto)  cmd_auto  ;;
+    regen) cmd_regen ;;
+    *)     usage; exit 1 ;;
+  esac
+}
+
+main "$@"
