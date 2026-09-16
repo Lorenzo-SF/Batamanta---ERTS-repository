@@ -21,10 +21,10 @@ on:
         required: false
         type: string
       targets:
-        description: "Comma-separated targets. Leave empty for all 8."
+        description: "Space- or comma-separated targets. Leave empty for the 7 buildable defaults."
         required: false
         type: string
-        default: "linux-glibc-amd64,linux-glibc-arm64,linux-musl-amd64,linux-musl-arm64,darwin-amd64,darwin-arm64,windows-amd64,windows-arm64"
+        default: "linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-arm64 windows-amd64"
       regenerate_from_zero:
         description: "Delete every existing release and MANIFEST entry, then rebuild from scratch. DANGEROUS."
         required: false
@@ -130,6 +130,15 @@ jobs:
           else
             targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-arm64 windows-amd64"
           fi
+          # Normalise: the inputs.targets default uses commas (the
+          # GitHub UI copy-paste convention) but `_compute_build_plan`
+          # iterates its args space-by-space, and the cross-product jq
+          # path below splits on whitespace. Without this tr the
+          # default input would be passed as ONE comma-joined arg to
+          # the for-loop and produce a single, useless "taget=..." pair
+          # in the matrix. Replace any comma with a space and collapse
+          # consecutive whitespace.
+          targets_filter="${targets_filter//,/ }"
           # Manual version override → cross product with targets_filter
           if [[ -n "${{ inputs.version }}" ]]; then
             matrix="$(jq -nc --arg versions "${{ inputs.version }}" --arg targets "$targets_filter" '
