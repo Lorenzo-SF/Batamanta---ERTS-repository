@@ -25,9 +25,13 @@
 #      are intentionally ignored — they are cleaned out of the release
 #      assets in a separate step, and the upstream MANIFEST only ever
 #      references the new naming.
-#  After writing MANIFEST.json the script commits + pushes it to the same
-#  branch the user is currently on (typically `main`). Use `--no-push` to
-#  just write the file locally and let you commit yourself.
+#  After writing MANIFEST.json the script commits + pushes it to the
+#  same branch the user is currently on (typically `main`). Use
+#  `--no-push` to commit locally but skip the push — the caller
+#  usually wants to inspect the diff or hand the push to a separate
+#  workflow job. Use `--no-commit` to skip both the commit and the
+#  push (the workflow calls it that way and runs the manifest-commit
+#  job afterwards to do the actual commit + push).
 #
 #  Prereqs:
 #    * `gh` CLI authenticated (or `GH_TOKEN` / `BATAMANTA_GITHUB_TOKEN`).
@@ -41,8 +45,13 @@
 #    # Custom floor (only keep entries for OTP >= 28.0):
 #    ./scripts/local/regenerate-manifest.py --min-version 28.0
 #
-#    # Just write the file, don't commit/push:
+#    # Commit locally, skip the push (the GH Actions workflow uses this
+#    # via the manifest-regenerate job, then the manifest-commit job
+#    # does the actual push via git push):
 #    ./scripts/local/regenerate-manifest.py --no-push
+#
+#    # Don't commit or push at all (caller handles both):
+#    ./scripts/local/regenerate-manifest.py --no-commit
 #
 #    # Different repo (default: the canonical one):
 #    ./scripts/local/regenerate-manifest.py --repo Lorenzo-SF/Batamanta---ERTS-repository
@@ -250,11 +259,22 @@ def _find_repo_root() -> Path:
     return Path.cwd()
 
 
-def maybe_commit_and_push(path: Path, do_push: bool) -> None:
-    """If MANIFEST.json changed, commit and (optionally) push."""
+def maybe_commit_and_push(path: Path, do_push: bool, do_commit: bool = True) -> None:
+    """If MANIFEST.json changed, commit and (optionally) push.
+
+    When `do_commit` is False, the function bails out before doing any
+    git operations — used by the GH Actions workflow's
+    manifest-regenerate job, which hands the actual commit + push to a
+    downstream manifest-commit job so the diff can be inspected first
+    and so a single push carries whatever the regeneration decided.
+    """
     p = run(["git", "status", "--porcelain", "--", str(path)])
     if not p.stdout.strip():
-        log("no manifest changes — nothing to commit")
+        log("no manifest changes — manifest already matches the live release set")
+        return
+
+    if not do_commit:
+        log("--no-commit set — leaving MANIFEST.json staged for the caller to commit")
         return
 
     p = run([
@@ -291,6 +311,8 @@ def main() -> int:
                     help="Path to the manifest file (default: <repo-root>/MANIFEST.json)")
     ap.add_argument("--no-push", action="store_true",
                     help="Don't push after committing")
+    ap.add_argument("--no-commit", action="store_true",
+                    help="Don't commit or push; just write the manifest")
     args = ap.parse_args()
 
     owner = args.owner or args.repo.split("/", 1)[0]
@@ -306,7 +328,11 @@ def main() -> int:
     write_manifest(manifest, manifest_path)
 
     if (manifest_path.parent / ".git").exists():
-        maybe_commit_and_push(manifest_path, do_push=not args.no_push)
+        maybe_commit_and_push(
+            manifest_path,
+            do_push=not args.no_push,
+            do_commit=not args.no_commit,
+        )
     else:
         log("not in a git checkout — skipping commit/push")
 

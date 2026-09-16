@@ -234,7 +234,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x ./scripts/*.sh ./scripts/*.py
-          ./scripts/regenerate-manifest.py --no-push --min-version "${{ inputs.min_version }}"
+          # --no-commit: the manifest-commit job downstream does the
+          # actual commit + push, so we can keep a single tidy diff
+          # for the whole cycle.
+          ./scripts/regenerate-manifest.py --no-commit --min-version "${{ inputs.min_version }}"
 
   # -------------------------------------------------------------------------
   #  manifest-commit — if manifest-regenerate produced any changes,
