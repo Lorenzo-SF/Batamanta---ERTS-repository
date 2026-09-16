@@ -21,22 +21,17 @@ on:
         required: false
         type: string
       targets:
-        description: "Space-separated list of targets to build. Commas also work. Leave empty for the CI default (the 4 linux targets)."
+        description: "Comma-separated targets. Leave empty for all 8."
         required: false
         type: string
-        # CI default: the 4 Linux targets. The other 2 (darwin-arm64,
-        # windows-amd64) are intentionally NOT in the CI matrix because
-        # they require macos/windows runners (paid plan or self-hosted).
-        # They are built manually with sync-erts.sh on the corresponding
-        # host. Override this with any subset of the 6 supported targets.
-        default: "linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64"
+        default: "linux-glibc-amd64,linux-glibc-arm64,linux-musl-amd64,linux-musl-arm64,darwin-amd64,darwin-arm64,windows-amd64,windows-arm64"
       regenerate_from_zero:
         description: "Delete every existing release and MANIFEST entry, then rebuild from scratch. DANGEROUS."
         required: false
         type: boolean
         default: false
       min_version:
-        description: "Only build OTP versions >= this. Default 27.0 (we don't ship legacy ERTS for older OTP)."
+        description: "Only build OTP versions >= this. Default 27.0 (we don't ship legacy ERTS for older OtP)."
         required: false
         type: string
         default: "27.0"
@@ -55,7 +50,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write   # to create releases + push manifest changes
+  contents: write # to create releases + push manifest changes
 
 jobs:
   # -------------------------------------------------------------------------
@@ -67,32 +62,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: bash -n on every .sh (incl. _legacy/, but those are warnings only)
+      - name: bash -n on every .sh
         run: |
           set -e
-          fail=0
-          for f in $(find scripts _legacy -maxdepth 3 -name '*.sh' 2>/dev/null); do
-            if ! bash -n "$f"; then
-              echo "::error::bash -n failed on $f"
-              fail=1
-            fi
+          for f in $(find scripts -maxdepth 2 -name '*.sh'); do
+            echo "checking $f"
+            bash -n "$f"
           done
-          exit $fail
-
-      - name: validate parse-release-assets.escript parses JSON
-        if: always()
-        run: |
-          set -e
-          # The escript (Erlang) + Python helpers moved to _legacy/ when
-          # we switched to erts_gen + setup.d-style scripts. Look in both
-          # places so the lint job survives the transition.
-          escript=$(find scripts _legacy -name parse-release-assets.escript 2>/dev/null | head -1)
-          if [[ -z "$escript" ]]; then
-            echo "::error::parse-release-assets.escript not found anywhere"
-            exit 1
-          fi
-          test -f "$escript"
-          python3 -c "import ast,glob; [ast.parse(open(f, encoding='utf-8').read()) for f in glob.glob('scripts/**/*.py', recursive=True) + glob.glob('_legacy/**/*.py', recursive=True)]; print('py OK')"
 
       - name: jq on MANIFEST.json
         run: |
@@ -101,124 +77,15 @@ jobs:
           jq -e 'type == "object"' MANIFEST.json >/dev/null
 
   # -------------------------------------------------------------------------
-  #  auto-detect-weekly — every Monday 06:00 UTC, ask upstream erlang/otp
-  #  what the latest stable OTP versions are, compare against the local
-  #  MANIFEST.json, and if there are new entries, open a labelled GitHub
-  #  issue so a human (or the daily sync-releases job below) knows to act.
-  #
-  #  This is the "que cada semana se chequease si hay versiones nuevas"
-  #  hook the user asked for. The actual build+push continues to happen
-  #  in the schedule'd `build` job further down, which runs the FULL
-  #  matrix every Monday. This job is purely informational — opening
-  #  the issue is the cheapest possible state change, and lets you
-  #  cross-check upstream before the build churn starts.
+  #  detect — list the (version, target) pairs that are missing. Only runs
+  #  on schedule / manual / push to main, not on PRs.
   # -------------------------------------------------------------------------
-  auto-detect-weekly:
-    name: Auto-detect new OTP versions
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install jq + curl
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl
-
-      - name: Compare upstream tags vs local MANIFEST
-        id: detect
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MIN_OTP_VERSION: ${{ inputs.min_version }}
-        run: |
-          set -euo pipefail
-
-          # 1. Versions we already mirror.
-          if [[ -f MANIFEST.json ]]; then
-            local_versions=$(jq -r 'keys[] | sub("^OTP-"; "")' MANIFEST.json | sort -V)
-          else
-            local_versions=""
-          fi
-
-          # 2. Stable OTP tags upstream (erlang/otp). Filter to >= MIN_OTP_VERSION
-          #    (default 27.0) and to numeric X.Y or X.Y.Z shape. erlang/otp tags
-          #    are 'OTP-<version>' but can include prereleases — we ask the API
-          #    for all tags and filter by version shape.
-          upstream_tags="$(curl -fsSL \
-            -H "$(if [[ -n "${GH_TOKEN:-}" ]]; then printf 'Authorization: Bearer %s' "$GH_TOKEN"; else printf 'Accept: application/vnd.github+json'; fi)" \
-            "https://api.github.com/repos/erlang/otp/tags?per_page=100" \
-            | jq -r '.[].name | sub("^OTP-"; "")' \
-            | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$')"
-
-          # 3. Drop anything < MIN_OTP_VERSION (e.g. 26.0/1.x we don't ship).
-          min="${MIN_OTP_VERSION:-27.0}"
-          upstream_filtered="$(printf '%s\n' "$upstream_tags" \
-            | awk -v min="$min" '
-                function vcmp(a, b,    i, n, x, y) {
-                  n = split(a, x, "."); n = split(b, y, ".")
-                  for (i=1; i<=n || i<=length(y); i++) {
-                    if ((x[i]+0) < (y[i]+0)) return -1
-                    if ((x[i]+0) > (y[i]+0)) return  1
-                  }
-                  return 0
-                }
-                { if (vcomp($0, min) >= 0) print }' \
-            | sort -V)"
-
-          # 4. Compute the set difference (new = upstream \ local).
-          new_versions="$(printf '%s\n%s\n' "$upstream_filtered" "$local_versions" \
-            | sort -V | uniq -u \
-            | comm -23 <(printf '%s\n' "$upstream_filtered") <(printf '%s\n' "$local_versions"))"
-
-          if [[ -z "$new_versions" ]]; then
-            echo "no new OTP versions detected"
-            echo "count=0" >> "$GITHUB_OUTPUT"
-            echo "list=" >> "$GITHUB_OUTPUT"
-          else
-            count=$(printf '%s\n' "$new_versions" | grep -c .)
-            list=$(printf '%s\n' "$new_versions" | tr '\n' ',' | sed 's/,$//')
-            echo "new_versions=$list (count=$count)"
-            echo "count=$count" >> "$GITHUB_OUTPUT"
-            echo "list=$list" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Open an issue if new versions are found
-        if: steps.detect.outputs.count > 0
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LIST: ${{ steps.detect.outputs.list }}
-          BODY_FILE: /tmp/auto-detect-body.md
-        run: |
-          set -euo pipefail
-          {
-            echo "Auto-detect (weekly cron) found these new stable OTP versions upstream that aren't in MANIFEST.json yet:"
-            echo
-            printf '%s' "$LIST" | tr ',' '\n' | sed 's/^/- /'
-            echo
-            echo "Next steps:"
-            echo "1. The next scheduled run of the sync-releases job (also Monday) will create the matching empty release tags via gh release create."
-            echo "2. The build matrix then picks them up and builds each (target, version) cell."
-            echo
-            echo "If you want to skip the cron and build right now, run the workflow manually (workflow_dispatch) and pass one of the new versions in 'version'."
-            echo
-            echo "(This issue is created automatically by .github/workflows/erts.yml:auto-detect-weekly.)"
-          } > "$BODY_FILE"
-
-          gh issue create \
-            --title "New OTP versions detected upstream: $LIST" \
-            --label "auto-detect" \
-            --label "erts-mirror" \
-            --body-file "$BODY_FILE"
-
-  # -------------------------------------------------------------------------
-  #  sync-releases — run sync-erts.sh --releases-only to ensure every stable
-  #  OTP version >= min_version has an (empty) release in the repo. Runs
-  #  ONCE on ubuntu, before the per-(target,version) build matrix.
-  # -------------------------------------------------------------------------
-  sync-releases:
-    name: Sync releases
+  detect:
+    name: Detect missing versions
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
 
@@ -227,119 +94,56 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq gh
 
-      - name: erts_gen sync-releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MIN_OTP_VERSION: ${{ inputs.min_version }}
-        run: |
-          # Source _lib.sh (which loads 00-04 + 10-targets/* + runs the
-          # public-surface self-test) and call sync_releases() directly.
-          # This is the same behaviour the old sync-erts.sh --releases-only
-          # path had, but going through the new setup.d-shaped lib.
-          bash -c '. ./scripts/_lib.sh && sync_releases'
-
       - name: Handle regenerate_from_zero
+        id: reset
         if: ${{ inputs.regenerate_from_zero == true }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "regenerate_from_zero=true — wiping the whole repo..."
-          # erts_gen regen (with --force) is the destructive wipe + rebuild.
-          # For the wipe-only-from-CI case we just clear MANIFEST; the next
-          # `sync-releases` job below will rebuild via the regular flow.
-          . ./scripts/_lib.sh
-          wipe_all_releases
+          echo "regenerate_from_zero=true — deleting every release and wiping MANIFEST.json"
+          for tag in $(gh release list --json tagName -q '.[].tagName'); do
+            echo "  deleting release $tag"
+            gh release delete "$tag" --yes --cleanup-tags || true
+          done
+          echo '{}' > MANIFEST.json
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add MANIFEST.json
           git commit -m "chore(erts): wipe MANIFEST.json for regenerate_from_zero" || true
           git push || true
 
-  # -------------------------------------------------------------------------
-  #  build — one job per (target, version) pair. The matrix is computed by
-  #  the `detect` job from the live release set + the requested targets.
-  # -------------------------------------------------------------------------
-  detect:
-    name: Detect missing (target, version) pairs
-    if: github.event_name != 'pull_request'
-    needs: sync-releases
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.detect.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install gh + jq
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq gh
-
-      - name: Build the (version, target) matrix
+      - name: Detect missing versions
         id: detect
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MIN_OTP_VERSION: ${{ inputs.min_version }}
+          DETECT_MIN_VERSION: ${{ inputs.min_version }}
         run: |
-          set +e
-          # If the user pinned a specific version, use it. Otherwise pull
-          # the list from the live repo (sync-erts.sh --releases-only has
-          # already created any missing empty releases in the prior job).
           if [[ -n "${{ inputs.version }}" ]]; then
             versions="${{ inputs.version }}"
+            echo "manual override: $versions"
           else
-            # Ask the repo for every stable OTP version we have a release
-            # for. Sources _lib.sh just to surface list_local_versions,
-            # but the actual query is the same gh release list call.
-            . ./scripts/_lib.sh
-            versions="$(list_local_versions)"
+            versions="$(./scripts/detect-versions.sh stable | tr '\n' ' ')"
             if [[ -z "$versions" ]]; then
-              echo "no versions found"
+              echo "no new versions found"
               echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            echo "missing versions (min_version=${{ inputs.min_version }}): $versions"
           fi
-
           if [[ -n "${{ inputs.targets }}" ]]; then
             targets_filter="${{ inputs.targets }}"
           else
-            targets_filter="linux-glibc-amd64 linux-musl-amd64 linux-glibc-arm64 linux-musl-arm64"
+            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64"
           fi
-          targets_filter="${targets_filter//,/ }"
-
-          matrix_items=""
-          for v in $versions; do
-            [[ -z "$v" ]] && continue
-            # Skip versions below MIN_OTP_VERSION (only matters if
-            # `inputs.version` is set; the list helper already filters
-            # via list_erlang_versions when called from sync-erts.sh).
-            for t in $targets_filter; do
-              [[ -z "$t" ]] && continue
-              case "$t" in
-                linux-*)   runner="ubuntu-latest" ;;
-                darwin-*)  runner="macos-latest" ;;
-                windows-*) runner="windows-latest" ;;
-                *)         runner="ubuntu-latest" ;;
-              esac
-              item="$(jq -nc --arg v "$v" --arg t "$t" --arg r "$runner" \
-                '{version: $v, target: $t, runner: $r}')"
-              if [[ -z "$matrix_items" ]]; then
-                matrix_items="$item"
-              else
-                matrix_items="$matrix_items,$item"
-              fi
-            done
-          done
-          matrix="$(jq -nc --argjson items "[$matrix_items]" '{include: $items}')"
+          matrix="$(jq -nc --arg versions "$versions" --arg targets "$targets_filter" '
+            ($versions | split(" ") | map(select(. != ""))) as $vs
+            | ($targets  | split(" ") | map(select(. != ""))) as $ts
+            | { include: [ $vs[] as $v | $ts[] as $t | { version: $v, target: $t } ] }
+          ')"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
 
   # -------------------------------------------------------------------------
-  #  build — one job per (target, version) pair. Each runs sync-erts.sh
-  #  --version=V --no-manifest <target> on the appropriate runner (linux,
-  #  mac, windows). The script handles: skip-if-already-uploaded, build
-  #  the asset natively, upload it. --no-manifest skips the per-cell
-  #  manifest regen; the `manifest-commit` job does that once at the end.
+  #  build — one job per (target, version) pair. Each runs the appropriate
+  #  script in `scripts/`.
   # -------------------------------------------------------------------------
   build:
     name: Build ${{ matrix.target }} / OTP ${{ matrix.version }}
@@ -349,7 +153,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
-      max-parallel: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -359,35 +162,18 @@ jobs:
           sudo rm -rf /usr/local/lib/android /opt/ghc 2>/dev/null || true
           sudo apt-get clean
 
-      - name: Install gh, jq
-        if: matrix.runner == 'ubuntu-latest' || matrix.runner == 'macos-latest'
+      - name: Install gh, jq, docker
         run: |
-          if [[ "${{ matrix.runner }}" == "macos-latest" ]]; then
-            # macOS runners ship /bin/bash = 3.2.57; sync-erts.sh needs bash 5+.
-            brew install jq gh bash
-          else
-            sudo apt-get update
-            sudo apt-get install -y jq gh
-          fi
+          sudo apt-get update
+          sudo apt-get install -y jq gh
 
-      - name: Run ${{ matrix.target }} build via sync-erts.sh
+      - name: Run ${{ matrix.target }} build
         env:
-          # sync-erts.sh reads GH_TOKEN (for `gh` itself) and
-          # BATAMANTA_GITHUB_TOKEN (for the per-target build scripts
-          # that use curl with the auth header). Set both.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BATAMANTA_DRY_RUN: "0"
+          BATAMANTA_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The CI runs on ubuntu-latest (Linux bash 5+) or macos-latest
-          # (Homebrew bash 5+ installed by the step above) or
-          # windows-latest (Git Bash 5+ via Git for Windows).
-          # Each runner's bash is compatible with the lib (_lib.sh still
-          # sources _bash_guard.sh which refuses bash < 5 just in case).
-          # Source _lib.sh (which loads 00-04 + 10-targets/* + runs the
-          # public-surface self-test) and call build_target directly.
-          . ./scripts/_lib.sh
-          build_target "${{ matrix.target }}" --only="${{ matrix.version }}" --no-manifest
+          chmod +x ./scripts/*.sh
+          ./scripts/erts-${{ matrix.target }}.sh ${{ matrix.version }}
 
       - name: Upload tarball as artifact (debug aid)
         if: always()
@@ -401,8 +187,8 @@ jobs:
           retention-days: 3
 
   # -------------------------------------------------------------------------
-  #  manifest-commit — runs sync-erts.sh --manifest-only once all builds
-  #  finish, then commits + pushes the new MANIFEST.json back to main.
+  #  manifest-commit — push the updated MANIFEST.json back to main once all
+  #  builds finish. Single job, no matrix.
   # -------------------------------------------------------------------------
   manifest-commit:
     name: Commit MANIFEST.json
@@ -414,24 +200,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-
-      - name: Install gh + jq
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq gh
-
-      - name: Regenerate MANIFEST.json via erts_gen
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # erts_gen auto = sync_releases + build + generate_manifest.
-          # We run it here after every build finished; the sync_releases
-          # + build parts are no-ops (everything is already done and
-          # build_target is keyed on (target, version)), so the only
-          # effective action is generate_manifest — the same one
-          # sync-erts.sh --manifest-only used to do.
-          bash ./scripts/erts_gen check      # PR-style visibility
-          bash ./scripts/erts_gen auto       # idempotent regen + manifest
 
       - name: Commit & push any manifest changes
         run: |
