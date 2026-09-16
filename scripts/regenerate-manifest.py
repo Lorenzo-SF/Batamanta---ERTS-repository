@@ -183,8 +183,15 @@ def derive_target_key(asset_name: str) -> str | None:
     return None
 
 
-def build_manifest(repo: str, owner: str, min_version: str) -> dict[str, dict[str, str]]:
-    """Walk every release and assemble the MANIFEST dict."""
+def build_manifest(repo: str, min_version: str) -> dict[str, dict[str, str]]:
+    """Walk every release and assemble the MANIFEST dict.
+
+    `repo` is the canonical "owner/name" tuple (e.g. "Lorenzo-SF/Batamanta---ERTS-repository").
+    The download URL is constructed from it so we never duplicate the owner
+    segment — earlier versions of this script interpolated `{owner}/{repo}`
+    which produced https://github.com/Lorenzo-SF/Lorenzo-SF/Batamanta---ERTS-repository/...
+    and made every entry 404.
+    """
     out: dict[str, dict[str, str]] = {}
     releases = list_releases(repo)
     skipped = {"draft": 0, "prerelease": 0, "bad_tag": 0, "below_floor": 0, "no_assets": 0}
@@ -225,7 +232,7 @@ def build_manifest(repo: str, owner: str, min_version: str) -> dict[str, dict[st
                 # but guards against future code drift.
                 continue
             entry[tk] = (
-                f"https://github.com/{owner}/{repo}/releases/download/{tag}/{a['name']}"
+                f"https://github.com/{repo}/releases/download/{tag}/{a['name']}"
             )
         if entry:
             out[tag] = entry
@@ -303,8 +310,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default="Lorenzo-SF/Batamanta---ERTS-repository",
                     help="GitHub owner/repo (default: %(default)s)")
-    ap.add_argument("--owner", default=None,
-                    help="GitHub owner (defaults to the owner part of --repo)")
     ap.add_argument("--min-version", default=os.environ.get("DETECT_MIN_VERSION", "27.0"),
                     help="Only include OTP versions >= this (default: 27.0, or $DETECT_MIN_VERSION)")
     ap.add_argument("--manifest", default=str(_find_repo_root() / "MANIFEST.json"),
@@ -315,7 +320,6 @@ def main() -> int:
                     help="Don't commit or push; just write the manifest")
     args = ap.parse_args()
 
-    owner = args.owner or args.repo.split("/", 1)[0]
     manifest_path = Path(args.manifest).resolve()
     if not manifest_path.exists():
         # Allow writing to a brand-new tree (the script doesn't require
@@ -324,7 +328,7 @@ def main() -> int:
     else:
         log(f"will update existing {manifest_path}")
 
-    manifest = build_manifest(args.repo, owner, args.min_version)
+    manifest = build_manifest(args.repo, args.min_version)
     write_manifest(manifest, manifest_path)
 
     if (manifest_path.parent / ".git").exists():
