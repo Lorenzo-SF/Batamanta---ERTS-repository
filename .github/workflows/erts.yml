@@ -77,11 +77,14 @@ jobs:
           jq -e 'type == "object"' MANIFEST.json >/dev/null
 
   # -------------------------------------------------------------------------
-  #  detect — list the (version, target) pairs that are missing. Only runs
-  #  on schedule / manual / push to main, not on PRs.
+  #  detect — compute the (version, target) build matrix. Emits every
+  #  pair that doesn't yet have a published asset on the corresponding
+  #  release, so it catches both new OTP versions AND missing targets
+  #  on existing versions. Only runs on schedule / manual / push to
+  #  main, not on PRs.
   # -------------------------------------------------------------------------
   detect:
-    name: Detect missing versions
+    name: Detect missing version-target pairs
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
@@ -110,33 +113,48 @@ jobs:
           git commit -m "chore(erts): wipe MANIFEST.json for regenerate_from_zero" || true
           git push || true
 
-      - name: Detect missing versions
+      - name: Detect missing version-target pairs
         id: detect
         env:
           DETECT_MIN_VERSION: ${{ inputs.min_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ -n "${{ inputs.version }}" ]]; then
-            versions="${{ inputs.version }}"
-            echo "manual override: $versions"
-          else
-            versions="$(./scripts/detect-versions.sh stable | tr '\n' ' ')"
-            if [[ -z "$versions" ]]; then
-              echo "no new versions found"
-              echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "missing versions (min_version=${{ inputs.min_version }}): $versions"
-          fi
+          chmod +x ./scripts/*.sh
+          # Default to the 7 targets the GH Actions matrix can actually
+          # build. darwin-amd64 needs a paid macOS runner (we only have
+          # macos-14) and windows-arm64 has no upstream prebuild. The
+          # manifest-regenerate job (below) reconciles darwin-amd64 with
+          # whatever the user has uploaded manually.
           if [[ -n "${{ inputs.targets }}" ]]; then
             targets_filter="${{ inputs.targets }}"
           else
-            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64"
+            targets_filter="linux-glibc-amd64 linux-glibc-arm64 linux-musl-amd64 linux-musl-arm64 darwin-arm64 windows-amd64"
           fi
-          matrix="$(jq -nc --arg versions "$versions" --arg targets "$targets_filter" '
-            ($versions | split(" ") | map(select(. != ""))) as $vs
-            | ($targets  | split(" ") | map(select(. != ""))) as $ts
-            | { include: [ $vs[] as $v | $ts[] as $t | { version: $v, target: $t } ] }
-          ')"
+          # Manual version override → cross product with targets_filter
+          if [[ -n "${{ inputs.version }}" ]]; then
+            matrix="$(jq -nc --arg versions "${{ inputs.version }}" --arg targets "$targets_filter" '
+              ($versions | split(",") | map(select(. != ""))) as $vs
+              | ($targets  | split(" ") | map(select(. != ""))) as $ts
+              | { include: [ $vs[] as $v | $ts[] as $t | { version: $v, target: $t } ] }
+            ')"
+          else
+            # No manual version: walk every (version, target) pair and
+            # emit the ones that haven't already been uploaded as an
+            # asset on the corresponding release tag. This catches
+            # both the "new OTP version" case AND the "existing
+            # version is missing a target" case.
+            matrix="$(. ./scripts/_lib.sh && . ./scripts/01-detect.sh && \
+              _compute_build_plan $targets_filter \
+              | jq -R -s 'split("\n") | map(select(. != "")) | map(split(" ")) | { include: map({ version: .[1], target: .[0] }) }'
+            )"
+          fi
+          # Add the right GH Actions runner for each target. The 4
+          # linux glibc/musl × amd64/arm64 builds run in docker on
+          # ubuntu; the macos and windows builds need their native
+          # runners.
+          runner_overrides='{"linux-glibc-amd64":"ubuntu-latest","linux-glibc-arm64":"ubuntu-latest","linux-musl-amd64":"ubuntu-latest","linux-musl-arm64":"ubuntu-latest","darwin-arm64":"macos-14","windows-amd64":"windows-latest"}'
+          matrix="$(echo "$matrix" | jq --argjson runners "$runner_overrides" \
+            '.include |= map(. + { runner: ($runners[.target] // "ubuntu-latest") })')"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
@@ -187,12 +205,44 @@ jobs:
           retention-days: 3
 
   # -------------------------------------------------------------------------
-  #  manifest-commit — push the updated MANIFEST.json back to main once all
-  #  builds finish. Single job, no matrix.
+  #  manifest-regenerate — walks every OTP-* release on the repo via the
+  #  GitHub API and rebuilds MANIFEST.json from scratch. This catches
+  #  drift caused by builds uploaded manually from a macOS host (which
+  #  GH Actions can't provide — darwin-amd64 is the canonical example)
+  #  or by a CI race where the upload succeeded but the in-run
+  #  manifest_set_entry didn't. The script targets all 8 supported
+  #  keys; obsolete entries are dropped.
+  # -------------------------------------------------------------------------
+  manifest-regenerate:
+    name: Regenerate MANIFEST.json from releases
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install gh + python3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh python3
+
+      - name: Regenerate MANIFEST.json from the live release set
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./scripts/*.sh ./scripts/*.py
+          ./scripts/regenerate-manifest.py --no-push --min-version "${{ inputs.min_version }}"
+
+  # -------------------------------------------------------------------------
+  #  manifest-commit — if manifest-regenerate produced any changes,
+  #  commit + push them to main.
   # -------------------------------------------------------------------------
   manifest-commit:
     name: Commit MANIFEST.json
-    needs: build
+    needs: manifest-regenerate
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
