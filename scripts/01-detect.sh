@@ -137,11 +137,11 @@ _compute_build_plan() {
           continue
         fi
       fi
-      if [[ -z "${BATAMANTA_FORCE:-}" ]] \
-         && [[ "$(_state_get "$target/$v")" == "done" ]] \
-         && asset_in_release "$tag" "$asset"; then
-        continue
-      fi
+      # Skip if BATAMANTA_FORCE is unset AND the asset is already on
+      # the release. The .build-state.json cache is a hint (it avoids
+      # repeated gh roundtrips), not a gate — if the asset is on the
+      # release we trust that, regardless of what .build-state.json
+      # claims about a previous in-process attempt.
       if [[ -z "${BATAMANTA_FORCE:-}" ]] \
          && asset_in_release "$tag" "$asset"; then
         continue
