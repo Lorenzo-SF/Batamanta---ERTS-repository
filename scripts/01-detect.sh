@@ -118,6 +118,7 @@ _compute_build_plan() {
   fi
   local targets=("$@")
   local target v tag code url
+  local min_version="${DETECT_MIN_VERSION:-}"
   for target in "${targets[@]}"; do
     local asset="${TARGET_ASSET[$target]:-}"
     if [[ -z "$asset" ]]; then
@@ -126,11 +127,21 @@ _compute_build_plan() {
     fi
     for v in "${OTP_VERSIONS[@]}"; do
       tag="OTP-$v"
-      if [[ -z "${BATAMANTA_FORCE:-}" ]] \
-         && [[ "$(_state_get "$target/$v")" == "done" ]] \
-         && asset_in_release "$tag" "$asset"; then
-        continue
+      # Honor the same min_version floor as detect_new_versions. Without
+      # this, the workflow would queue 25.x / 26.x builds even though
+      # those releases are below the configured floor (default 27.0).
+      if [[ -n "$min_version" ]]; then
+        local lower
+        lower="$(printf '%s\n%s\n' "$v" "$min_version" | sort -V | head -n1)"
+        if [[ "$lower" != "$min_version" ]]; then
+          continue
+        fi
       fi
+      # Skip if BATAMANTA_FORCE is unset AND the asset is already on
+      # the release. The .build-state.json cache is a hint (it avoids
+      # repeated gh roundtrips), not a gate — if the asset is on the
+      # release we trust that, regardless of what .build-state.json
+      # claims about a previous in-process attempt.
       if [[ -z "${BATAMANTA_FORCE:-}" ]] \
          && asset_in_release "$tag" "$asset"; then
         continue
