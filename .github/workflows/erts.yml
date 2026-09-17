@@ -185,7 +185,19 @@ jobs:
   build:
     name: Build ${{ matrix.target }} / OTP ${{ matrix.version }}
     needs: detect
-    if: github.event_name != 'pull_request' && matrix.target != ''
+    # The detect job writes `needs.detect.outputs.matrix`. When the
+    # build queue is empty the substituted sentinel is still a non-empty
+    # GH matrix (one entry with target='', version=''), so we cannot
+    # simply gate on `if: matrix.target != ''` — that variable isn't
+    # in scope at the job level. Instead we compare the outputs string.
+    # The sentinel includes '":""' exactly once (target and version);
+    # a real matrix carries the real values inside. We refuse to skip
+    # the trigger events entirely so nightly schedules still produce a
+    # 'no work' green run instead of a job that errors out.
+    if: |
+      github.event_name != 'pull_request' &&
+      contains(needs.detect.outputs.matrix, '"target":"') &&
+      !contains(needs.detect.outputs.matrix, '"target":"",')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
