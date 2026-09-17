@@ -164,9 +164,19 @@ jobs:
           runner_overrides='{"linux-glibc-amd64":"ubuntu-latest","linux-glibc-arm64":"ubuntu-latest","linux-musl-amd64":"ubuntu-latest","linux-musl-arm64":"ubuntu-latest","darwin-arm64":"macos-14","windows-amd64":"windows-latest"}'
           matrix="$(echo "$matrix" | jq --argjson runners "$runner_overrides" \
             '.include |= map(. + { runner: ($runners[.target] // "ubuntu-latest") })')"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "computed matrix:"
           echo "$matrix" | jq .
+          # Empty matrix (everything already shipped + nothing new
+          # discovered) makes `fromJson(needs.detect.outputs.matrix)`
+          # in downstream jobs fail with 'Invalid format "  include:'
+          # because GH Actions can't parse {"include":[]} as a matrix.
+          # Substitute a single no-op entry that downstream jobs can
+          # skip via `if: matrix.target != ''` if needed.
+          if [[ "$(echo "$matrix" | jq '.include | length')" == "0" ]]; then
+            echo "  (empty matrix — nothing to build; sentinel included for GH Actions)"
+            matrix='{"include":[{"target":"","version":"","runner":"ubuntu-latest"}]}'
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------------
   #  build — one job per (target, version) pair. Each runs the appropriate
@@ -175,7 +185,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }} / OTP ${{ matrix.version }}
     needs: detect
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && matrix.target != ''
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
