@@ -3,14 +3,24 @@
 #  erts_gen — single entry point for the Batamanta---ERTS-repository pipeline.
 # =============================================================================
 #
-#  Three subcommands, both work manually (any host with bash 5+) and
-#  autonomously (the CI workflow .github/workflows/erts.yml calls `auto`).
+#  Entry point for the Batamanta---ERTS-repository pipeline: check, sync,
+#  matrix, manifest, auto, regen. Works manually (any host with bash 5+)
+#  and autonomously (the CI workflow .github/workflows/erts.yml calls
+#  `matrix` + `sync` + per-cell builds + `manifest`).
 #
 #  Usage:
 #
 #    erts_gen check                       # dry-run: report what's missing
+#    erts_gen sync                        # nivel 1: create missing OTP-* release tags
+#    erts_gen matrix                      # nivel 2: JSON matrix of missing (version,target) assets
 #    erts_gen auto [--target=…] [--version=…] [--dry-run]
 #    erts_gen regen [--all|--arm64|--amd64] [--force]
+#
+#  The two levels mirror how the mirror is organised:
+#    1. releases: every stable upstream erlang/otp version >= MIN_OTP_VERSION
+#       (default 27.0) must have an `OTP-X.Y.Z` tag here (`sync` creates them).
+#    2. assets: every release must carry one asset per target
+#       (`matrix` lists the missing cells for CI, `auto` builds them).
 #
 #  Both `auto` and `regen` need a GH_TOKEN with Contents: write on the
 #  repo (the env var GH_TOKEN, BATAMANTA_GITHUB_TOKEN, or the local
@@ -38,10 +48,41 @@ ERTS_GEN_VERSION="0.1.0"
 ERTS_GEN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ----------------------------------------------------------------------
-#  Source the lib (it self-tests the public surface on load)
+#  Source the libs (new numbered world: 00-utils → 01-detect →
+#  02-sync-releases → 03-build → 04-manifest).
+#
+#  Order matters: 03-build.sh runs _clean_stale_locks (defined in
+#  01-detect.sh) at source time, so 01 must come before 03.
+#
+#  NOTE: this is mutually exclusive with the legacy `_lib.sh` world
+#  (sourced by `erts-*.sh` + `detect-versions.sh`). Both define
+#  `build_target`, `TARGET_ASSET`, `manifest_*`, etc. with different
+#  signatures — never source both in the same shell.
 # ----------------------------------------------------------------------
-# shellcheck source=_lib.sh
-. "$ERTS_GEN_DIR/_lib.sh"
+# shellcheck source=00-utils.sh
+. "$ERTS_GEN_DIR/00-utils.sh"
+# shellcheck source=01-detect.sh
+. "$ERTS_GEN_DIR/01-detect.sh"
+# shellcheck source=02-sync-releases.sh
+. "$ERTS_GEN_DIR/02-sync-releases.sh"
+# shellcheck source=03-build.sh
+. "$ERTS_GEN_DIR/03-build.sh"
+# shellcheck source=04-manifest.sh
+. "$ERTS_GEN_DIR/04-manifest.sh"
+
+load_target_builders() {
+  # Source every per-target builder so `build_target` finds its
+  # `build_<target>` function. Needed only by `auto`/`regen` (not by
+  # `check`/`sync`/`matrix`, which never build).
+  # shellcheck source=10-targets/_helpers.sh
+  . "$ERTS_GEN_DIR/10-targets/_helpers.sh"
+  local f
+  for f in "$ERTS_GEN_DIR"/10-targets/*.sh; do
+    [[ "$(basename "$f")" == "_helpers.sh" ]] && continue
+    # shellcheck source=/dev/null
+    . "$f"
+  done
+}
 
 # Defaults that erts_gen needs on top of what _lib.sh already does.
 REPO="${REPO:-Lorenzo-SF/Batamanta---ERTS-repository}"
@@ -52,6 +93,7 @@ export BATAMANTA_RETRIES="${BATAMANTA_RETRIES:-3}"
 SUBCOMMAND=""
 ARCH_FILTER="all"           # all | arm64 | amd64
 TARGET_FILTER=""            # "" = all targets per ARCH_FILTER
+TARGETS_CSV=""              # comma-separated target list (CI matrix input)
 VERSION_FILTER=""           # "" = all versions
 DRY_RUN=0
 FORCE=0
@@ -64,17 +106,31 @@ usage() {
   cat <<EOF
 erts_gen v$ERTS_GEN_VERSION — single entry point for the Batamanta---ERTS-repository
 
-Usage:
-  erts_gen check                       [options]
-  erts_gen auto                        [options]
-  erts_gen regen                       [options]
+  Usage:
+    erts_gen check                       [options]
+    erts_gen sync                        [options]
+    erts_gen matrix                      [options]
+    erts_gen manifest                    [options]
+    erts_gen auto                        [options]
+    erts_gen regen                       [options]
 
-Subcommands:
-  check                dry-run — report what's missing without acting
-  auto                 detect upstream + sync releases + build everything
-                       missing + regenerate MANIFEST
-  regen                DESTRUCTIVE — wipe every release first, then build.
-                       Confirmation: yes/interactive, or pass --force.
+  Subcommands:
+    check                dry-run — report what's missing without acting
+    sync                 nivel 1 — create the missing OTP-* release tags
+    matrix               nivel 2 — print the missing (version,target) asset
+                         cells as CI matrix JSON: {"include":[...]}
+    manifest             paso final — regenerate MANIFEST.json from the live
+                         release assets (easiest correct form: rebuild it
+                         whole instead of patching single entries)
+    auto                 detect upstream + sync releases + build everything
+                         missing + regenerate MANIFEST
+    regen                DESTRUCTIVE — wipe every release first, then build.
+                         Confirmation: yes/interactive, or pass --force.
+
+  Filtering (sync / matrix / auto / regen):
+    --min=X.Y            upstream floor (default $MIN_OTP_VERSION or 27.0)
+    --target=NAME        restrict to a single target
+    --targets=A,B        restrict to a comma-separated target list (CI)
 
 Filtering (auto / regen):
   --all                both architectures (default)
@@ -90,20 +146,23 @@ Safety:
   --force              regen: skip the "are you sure?" prompt. Mandatory in CI.
   --yes                auto: skip the "are you sure?" prompt for any interactive
                        confirm inside the build pipeline (e.g. discover).
+  Examples:
 
-Examples:
-  erts_gen check
-  erts_gen auto
-  erts_gen auto --dry-run
-  erts_gen auto --target=darwin-arm64
-  erts_gen auto --version=28.5
-  erts_gen regen --arm64                     # asks for confirmation
-  erts_gen regen --all --force               # CI/non-interactive
-  erts_gen regen --amd64 --force
+    erts_gen check
+    erts_gen sync
+    erts_gen matrix --target=windows-amd64
+    erts_gen manifest
+    erts_gen auto
+    erts_gen auto --dry-run
+    erts_gen auto --target=darwin-arm64
+    erts_gen auto --version=28.5
+    erts_gen regen --arm64                     # asks for confirmation
+    erts_gen regen --all --force               # CI/non-interactive
+    erts_gen regen --amd64 --force
 
-Environment:
-  REPO                    full owner/name (default Lorenzo-SF/Batamanta---ERTS-repository)
-  MIN_OTP_VERSION         upstream floor (default 27.0)
+  Environment:
+    REPO                    full owner/name (default Lorenzo-SF/Batamanta---ERTS-repository)
+    MIN_OTP_VERSION         upstream floor (default 27.0)
   GH_TOKEN / BATAMANTA_GITHUB_TOKEN
                           must grant Contents: write on \$REPO
   BATAMANTA_DRY_RUN=1     skip all uploads and tarball writes
@@ -115,14 +174,18 @@ parse_args() {
     case "$1" in
       -h|--help|help)
         usage; exit 0 ;;
-      check|auto|regen)
+      check|auto|regen|sync|matrix|manifest)
         [[ -z "$SUBCOMMAND" ]] || { err "only one subcommand allowed"; usage; exit 2; }
         SUBCOMMAND="$1"; shift ;;
+      --min=*)
+        MIN_OTP_VERSION="${1#--min=}"; export MIN_OTP_VERSION; shift ;;
       --all)    ARCH_FILTER="all";  shift ;;
       --arm64)  ARCH_FILTER="arm64"; shift ;;
       --amd64)  ARCH_FILTER="amd64"; shift ;;
       --target=*)
         TARGET_FILTER="${1#--target=}"; shift ;;
+      --targets=*)
+        TARGETS_CSV="${1#--targets=}"; shift ;;
       --version=*)
         VERSION_FILTER="${1#--version=}"; shift ;;
       --dry-run) DRY_RUN=1; export BATAMANTA_DRY_RUN=1; shift ;;
@@ -155,11 +218,34 @@ parse_args() {
       exit 2
     fi
   fi
+  if [[ -n "$TARGETS_CSV" ]]; then
+    local IFS=',' c
+    for c in $TARGETS_CSV; do
+      [[ -z "$c" ]] && continue
+      local found=0
+      for t in "${ALL_TARGETS[@]}"; do
+        [[ "$t" == "$c" ]] && found=1 && break
+      done
+      if (( !found )); then
+        err "unknown target in --targets: $c"
+        err "valid: ${ALL_TARGETS[*]}"
+        exit 2
+      fi
+    done
+  fi
 }
 
 # Resolve the list of targets we'll act on, based on ARCH_FILTER /
-# TARGET_FILTER. Empty stdin / parameter only; echoes one target per line.
+# TARGET_FILTER / TARGETS_CSV. Empty stdin / parameter only; echoes one
+# target per line.
 resolve_targets() {
+  if [[ -n "$TARGETS_CSV" ]]; then
+    local IFS=',' t
+    for t in $TARGETS_CSV; do
+      [[ -n "$t" ]] && printf '%s\n' "$t"
+    done
+    return
+  fi
   local arr_name
   case "$ARCH_FILTER" in
     arm64) arr_name="ARM64_TARGETS" ;;
@@ -251,6 +337,102 @@ cmd_check() {
   echo "Run 'erts_gen auto' to act on the plan above."
 }
 
+cmd_sync() {
+  # Nivel 1: every stable upstream erlang/otp version >= MIN_OTP_VERSION
+  # must have an OTP-X.Y.Z tag here. Idempotent.
+  log "==> sync: ensuring release tags for upstream >= ${MIN_OTP_VERSION:-27.0}"
+  sync_releases
+}
+
+target_runner() {
+  # CI runner per target (mirrors .github/workflows/erts.yml matrix runner).
+  case "$1" in
+    windows-*) echo "windows-latest" ;;
+    darwin-*)  echo "macos-14" ;;
+    *)         echo "ubuntu-latest" ;;
+  esac
+}
+
+cmd_matrix() {
+  # Nivel 2: print {"include":[{version,target,runner}...]} for every
+  # (version, target) cell whose asset is missing from the mirror release,
+  # with versions driven by upstream erlang/otp >= MIN_OTP_VERSION (NOT by
+  # the local MANIFEST). Empty set → {"include":[]}.
+  #
+  # NOTE: greps run against tmp files, never `gh | grep -q` under
+  # `set -o pipefail` (grep -q quits early, producer dies of SIGPIPE/141
+  # on big outputs and pipefail reports failure despite the match).
+  local versions_file targets_file cells
+  versions_file="$(mktemp)"; targets_file="$(mktemp)"; cells="$(mktemp)"
+  if [[ -n "$VERSION_FILTER" ]]; then
+    printf '%s\n' "$VERSION_FILTER" > "$versions_file"
+  else
+    list_upstream_versions > "$versions_file"
+  fi
+  resolve_targets > "$targets_file"
+  local v target tag asset names
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    tag="OTP-$v"
+    while IFS= read -r target; do
+      [[ -z "$target" ]] && continue
+      # Targets that can never build in CI are skipped unless explicitly
+      # requested: windows-arm64 has no upstream prebuilt to mirror, and
+      # darwin-amd64 needs a paid Intel runner (macos-14 is ARM — building
+      # there would ship a wrong-arch asset silently).
+      if [[ -z "$TARGET_FILTER" && -z "$TARGETS_CSV" ]]; then
+        case "$target" in
+          windows-arm64|darwin-amd64)
+            log "    skip $target/$v (not CI-buildable; use explicit --target to force)"
+            continue
+            ;;
+        esac
+      fi
+      asset="${TARGET_ASSET[$target]:-}"
+      [[ -z "$asset" ]] && continue
+      names="$(mktemp)"
+      if gh release view "$tag" --repo "$REPO" --json assets \
+           --jq '.assets[].name' > "$names" 2>/dev/null \
+         && grep -Fxq "$asset" "$names"; then
+        rm -f "$names"
+        continue
+      fi
+      rm -f "$names"
+      case "$target" in
+        linux-glibc-*|linux-musl-*|darwin-*)
+          local code
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://github.com/erlang/otp/releases/download/$tag/otp_src_$v.tar.gz" 2>/dev/null || echo 000)
+          if [[ "$code" != "302" && "$code" != "200" ]]; then
+            continue
+          fi
+          ;;
+        windows-*)
+          # Precompiled zip (no source build on Windows): skip the cell
+          # when upstream never published it (e.g. a source-only tag).
+          local upstream="otp_win64_$v.zip"
+          local code
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://github.com/erlang/otp/releases/download/$tag/$upstream" 2>/dev/null || echo 000)
+          if [[ "$code" != "302" && "$code" != "200" ]]; then
+            continue
+          fi
+          ;;
+      esac
+      printf '%s\t%s\t%s\n' "$v" "$target" "$(target_runner "$target")" >> "$cells"
+    done < "$targets_file"
+  done < "$versions_file"
+  jq -n -R '[inputs | split("\t") | {version:.[0], target:.[1], runner:.[2]}] | {include: .}' < "$cells"
+  rm -f "$versions_file" "$targets_file" "$cells"
+}
+
+cmd_manifest() {
+  # Paso final: regenerate MANIFEST.json whole from the live release set.
+  # Rebuilding is more robust than patching single entries (a failed
+  # per-asset update can't leave drift behind).
+  generate_manifest
+}
+
 cmd_auto() {
   log "==> auto: $REPO — detect → sync-releases → build → manifest"
   if [[ -n "$VERSION_FILTER" ]]; then
@@ -263,6 +445,11 @@ cmd_auto() {
   if [[ "$DRY_RUN" == "1" ]]; then
     log "    (--dry-run: no uploads, no tarball writes, no manifest commit)"
   fi
+
+  # build_target dispatches to build_<target> fns from 10-targets/*.sh —
+  # they must be sourced first (check/sync/matrix/manifest never build,
+  # so they skip this).
+  load_target_builders
 
   local targets_file versions_file
   targets_file="$(mktemp)"; versions_file="$(mktemp)"
@@ -335,6 +522,9 @@ main() {
 
   case "$SUBCOMMAND" in
     check) cmd_check ;;
+    sync) cmd_sync ;;
+    matrix) cmd_matrix ;;
+    manifest) cmd_manifest ;;
     auto)  cmd_auto  ;;
     regen) cmd_regen ;;
     *)     usage; exit 1 ;;
