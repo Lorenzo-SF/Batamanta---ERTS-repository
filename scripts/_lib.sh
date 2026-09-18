@@ -179,6 +179,36 @@ run() {
   fi
 }
 
+pack_zip() {
+  # pack_zip <output.zip> — zip $PWD into <output.zip>.
+  # Prefers Info-ZIP `zip`; falls back to `7z` (scoop/Windows dev boxes
+  # where Git Bash ships `unzip` but no `zip`) and to PowerShell
+  # Compress-Archive as last resort (Windows-only).
+  local out="$1"
+  # Fresh archive ALWAYS: both `zip` and `7z a` MERGE into an existing
+  # file instead of replacing it. Without this rm, rebuilding several
+  # versions into the same $DIST reuses one filename (windows-amd64.zip)
+  # and every build accumulates all previous trees (27.0 once shipped
+  # 1.9GB with erts dirs from 29.x/28.x inside).
+  rm -f "$out"
+  if command -v zip >/dev/null 2>&1; then
+    run zip -qr "$out" .
+  elif command -v 7z >/dev/null 2>&1; then
+    run 7z a -tzip "$out" . -mx=9 -mfb=64 > /dev/null
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    rm -f "$out"
+    if [[ "${BATAMANTA_DRY_RUN:-0}" == "1" ]]; then
+      printf '  \033[36m[dry-run]\033[0m powershell Compress-Archive %s\n' "$out"
+    else
+      powershell.exe -NoProfile -Command \
+        "Compress-Archive -Path '.\*' -DestinationPath '$out' -CompressionLevel Optimal"
+    fi
+  else
+    err "no zip backend found (need one of: zip, 7z, powershell.exe)"
+    return 1
+  fi
+}
+
 # -----------------------------------------------------------------------------
 #  GitHub helpers
 # -----------------------------------------------------------------------------
@@ -383,12 +413,20 @@ process_windows_zip() {
   mkdir -p "$work"
   run unzip -q "$tmp_zip" -d "$work"
 
-  # The upstream zip is laid out as `otp_win64_<v>/` inside the archive.
-  # Inside that, files are at the root. We strip the bloat and repack.
-  local root
-  root="$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1)"
-  if [[ -z "$root" ]]; then
-    err "could not locate ERTS root inside $tmp_zip"
+  # Upstream `otp_win64_<v>.zip` has NO single wrapper dir: top-level holds
+  # `bin/`, `erts-*/`, `lib/`, `releases/` side by side (plus a few root
+  # exes). The old `find ... | head -1` grabbed `bin/` and shipped a 320KB
+  # zip with 12 files instead of the full ~180MB tree. Root is deterministic:
+  # prefer the versioned wrapper if present, else the work dir itself.
+  local root="$work"
+  if [[ -d "$work/otp_win64_$v" ]]; then
+    root="$work/otp_win64_$v"
+  fi
+
+  if [[ ! -d "$root/bin" ]]; then
+    err "could not locate ERTS root inside $tmp_zip (no bin/ under $root)"
+    ls -la "$work" >&2 || true
+    ls -la "$root" >&2 || true
     return 1
   fi
 
@@ -402,9 +440,67 @@ process_windows_zip() {
   # docs that we don't need at runtime. ~30MB saved per tarball.
   find . -type d -path '*/erts-*/doc' -exec rm -rf {} + 2>/dev/null || true
   # Repack. Use zip so the output is a real .zip (Windows users can open it
-  # natively).
-  run zip -qr "$out" .
+  # natively). pack_zip prefers Info-ZIP, falls back to 7z / Compress-Archive.
+  pack_zip "$out"
   popd >/dev/null
+
+  # Post-zip gate: refuse truncated assets (the bin/-only bug shipped 320KB).
+  # Full Windows tree is ~100MB+ compressed; anything under 10MB is broken.
+  if [[ ! -s "$out" ]]; then
+    err "windows zip build produced empty $out"
+    return 1
+  fi
+  local out_size
+  out_size=$(wc -c < "$out" | tr -d ' ')
+  if [[ "$out_size" -lt 10485760 ]]; then
+    err "windows zip suspiciously small ($out_size bytes < 10MB): refusing $out"
+    ls -la "$root" >&2 || true
+    rm -f "$out"
+    return 1
+  fi
+  # NOTE: never `unzip | grep -q` under `set -o pipefail` here: grep -q
+  # quits at the first match, unzip then dies of SIGPIPE (141) on a 100k-file
+  # listing and pipefail reports failure even though the match succeeded.
+  # Dump names to a temp file once and grep the file (no pipe, no SIGPIPE).
+  # `grep -a` forces text mode: the tree has non-UTF8 names that make
+  # Git-Bash grep 3.0 exit 2 on a raw pipe.
+  local ziplist
+  ziplist="$(mktemp)"
+  unzip -Z1 "$out" > "$ziplist" 2>/dev/null || true
+  local zip_n
+  zip_n=$(LC_ALL=C grep -c . "$ziplist" 2>/dev/null || echo 0)
+  log "windows zip entries: $zip_n"
+  if ! LC_ALL=C grep -q -a -E 'bin/erl(\.exe)?' "$ziplist"; then
+    err "windows zip missing bin/erl(.exe): refusing $out"
+    head -40 "$ziplist" >&2 || true
+    rm -f "$ziplist" "$out"
+    return 1
+  fi
+  if ! LC_ALL=C grep -q -a -E 'releases/[^ /]+/' "$ziplist"; then
+    err "windows zip missing releases/<vsn>/: refusing $out"
+    rm -f "$ziplist" "$out"
+    return 1
+  fi
+  if ! LC_ALL=C grep -q -a -E '(erts-[0-9]|lib/kernel)' "$ziplist"; then
+    err "windows zip missing erts-*/ or lib/kernel: refusing $out"
+    rm -f "$ziplist" "$out"
+    return 1
+  fi
+  # Single-major guard: every top-level erts-X/... dir must share one major
+  # (upstream ships erts-16.4 + erts-16.4.0.2 side by side — same major).
+  # More than one major means foreign trees got merged in (e.g. zipping
+  # into a non-removed $out accumulates previous versions: 27.0 once
+  # shipped 1.9GB with erts-16.x AND erts-17.x inside).
+  local majors
+  majors=$(LC_ALL=C grep -a -o -E '^erts-[0-9]+' "$ziplist" 2>/dev/null | sort -u | wc -l | tr -d ' ')
+  if [[ "$majors" -ne 1 ]]; then
+    err "windows zip has $majors distinct erts majors (want exactly 1): refusing $out"
+    LC_ALL=C grep -a -o -E '^erts-[0-9.]+' "$ziplist" 2>/dev/null | sort -u | head -30 >&2 || true
+    rm -f "$ziplist" "$out"
+    return 1
+  fi
+  rm -f "$ziplist"
+  log "windows zip OK: $out ($out_size bytes)"
 }
 
 # -----------------------------------------------------------------------------

@@ -191,6 +191,11 @@ process_windows_zip() {
 
   (
     cd "$extract_dir"
+    if [[ ! -d bin ]]; then
+      err "no bin/ under $extract_dir (upstream layout changed?)"
+      ls -la >&2 || true
+      exit 1
+    fi
     # Fix the ROOTDIR sed lines so the resulting tree can be embedded as
     # the release's ERTS without an absolute path baked in.
     if [[ -f bin/erl ]]; then
@@ -200,8 +205,38 @@ process_windows_zip() {
     rm -rf src test examples 2>/dev/null || true
     # Repackage. zip on macOS is the system BSD zip; on Linux it's the
     # Info-ZIP one. Both accept -r -q. Output written under $DIST.
-    (cd "$extract_dir" && zip -r -q "$out" .) || { err "zip failed"; return 1; }
+    # Windows dev boxes (Git Bash) ship unzip but no zip -> 7z fallback.
+    if command -v zip >/dev/null 2>&1; then
+      (cd "$extract_dir" && zip -r -q "$out" .) || { err "zip failed"; return 1; }
+    elif command -v 7z >/dev/null 2>&1; then
+      (cd "$extract_dir" && 7z a -tzip "$out" . -mx=9 -mfb=64 > /dev/null) || { err "7z failed"; return 1; }
+    else
+      err "no zip backend found (need one of: zip, 7z)"
+      return 1
+    fi
   ) || return 1
+
+  if [[ ! -s "$out" ]]; then err "empty $out"; return 1; fi
+  local out_size
+  out_size=$(wc -c < "$out" | tr -d ' ')
+  if [[ "$out_size" -lt 10485760 ]]; then
+    err "windows zip suspiciously small ($out_size bytes < 10MB): refusing $out"
+    rm -f "$out"
+    return 1
+  fi
+  # Tmp-file grep: never `unzip | grep -q` under pipefail (SIGPIPE 141 on
+  # 100k-file listings even when the match succeeds).
+  local ziplist
+  ziplist="$(mktemp)"
+  unzip -Z1 "$out" > "$ziplist" 2>/dev/null || true
+  for pat in 'bin/erl(\.exe)?' 'releases/[^ /]+/' '(erts-[0-9]|lib/kernel)'; do
+    if ! LC_ALL=C grep -q -a -E "$pat" "$ziplist"; then
+      err "windows zip missing $pat: refusing $out"
+      rm -f "$ziplist" "$out"
+      return 1
+    fi
+  done
+  rm -f "$ziplist"
 
   printf '%s\n' "$out"
 }

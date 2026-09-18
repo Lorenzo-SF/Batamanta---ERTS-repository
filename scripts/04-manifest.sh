@@ -23,12 +23,19 @@ list_assets_full_for() {
 
   if [[ -n "$escript_runner" && -f "$escript" ]]; then
     gh release view "$tag" --repo "$REPO" --json assets 2>/dev/null \
-      | "$escript_runner" "$escript" 2>/dev/null | sort
+      | "$escript_runner" "$escript" 2>/dev/null | sort || true
   else
     # Fallback: pure-bash regex (handles only `name` + `url`).
+    # `|| true`: an empty release (fresh tag, no assets yet) makes grep
+    # exit 1, which under `set -o pipefail` + `set -e` would silently
+    # kill the whole manifest regen. Empty input → empty output instead.
+    #
+    # URLs stay ABSOLUTE (https://github.com/...): batamanta's Fetcher
+    # curls them verbatim, so stripping the domain would break every
+    # download.
     gh release view "$tag" --repo "$REPO" --json assets 2>/dev/null \
       | grep -oE '"name":"[^"]+"|"url":"https://github.com/[^"]+"' \
-      | paste - - | sed 's/"name":"//;s/"[[:space:]]*"url":"https:\/\/github\.com\/[^/]*\/[^/]*\// /;s/"$//' | sort
+      | paste - - | sed 's/"name":"//;s/"[[:space:]]*"url":"/ /;s/"$//' | sort || true
   fi
 }
 
@@ -100,7 +107,11 @@ generate_manifest() {
   local tmp="${manifest_file}.tmp.$$"
 
   local -a tags
-  mapfile -t tags < <(list_local_versions)
+  # Newest-first: matches the committed file's convention, so regens only
+  # diff on real changes (added/removed assets), not on ordering.
+  # (list_local_versions itself stays ascending — sync_releases feeds it
+  # to `comm`, which requires both inputs in the same order.)
+  mapfile -t tags < <(list_local_versions | sort -Vr)
 
   {
     echo "{"
